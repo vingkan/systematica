@@ -8,6 +8,7 @@ interface TurnControlsProps {
 
 export function TurnControls({ state, dispatch }: TurnControlsProps) {
   const isServer = state.activePlayer === 'server';
+  const isRouting = state.routingContext != null;
 
   const handleEndTurn = () => {
     if (isServer) {
@@ -17,10 +18,15 @@ export function TurnControls({ state, dispatch }: TurnControlsProps) {
     }
   };
 
+  // Don't show end turn during routing
+  if (isRouting) return null;
+
   return (
     <div className="turn-controls">
       <span className="active-player-label">
-        {isServer ? '// server turn: add or remove 1 card, then end turn' : `// client turn: play up to ${state.turnState.cardLimit} cards`}
+        {isServer
+          ? '// server turn: add, remove, or move 1 card, then end turn'
+          : `// client turn: play up to ${state.turnState.cardLimit} cards`}
       </span>
       <button className="btn primary" onClick={handleEndTurn}>
         End {isServer ? 'Server' : 'Client'} Turn

@@ -1,9 +1,36 @@
-export type GamePhase = 'build' | 'smoke-test' | 'ramp-up' | 'peak-load' | 'game-over';
+export type GamePhase = 'build' | 'play' | 'game-over';
 export type BuildStep = 'lb' | 'compute' | 'cache' | 'app-assignment' | 'done';
 export type CardType = 'network' | 'compute' | 'storage' | 'application';
 export type RequestType = 'view-event' | 'hold-ticket' | 'purchase-ticket';
 export type EffectType = 'stampeding-herd' | 'race-condition' | 'payment-error';
 export type ActivePlayer = 'server' | 'client';
+
+export type RoutingState =
+  | 'AT_LB'
+  | 'WAITING_AT_LB'
+  | 'AT_COMPUTE'
+  | 'AT_APP'
+  | 'AT_STORAGE'
+  | 'AT_PAYMENT'
+  | 'COMPLETED'
+  | 'FAILED';
+
+export interface RoutingStep {
+  state: RoutingState;
+  description: string;
+  cardInstanceId?: string;
+  result?: 'success' | 'failed' | 'pending';
+}
+
+export interface RoutingContext {
+  requestId: string;
+  state: RoutingState;
+  validTargets: string[];
+  lbRecommendation: string | null;
+  steps: RoutingStep[];
+  computeNodeId?: string;
+  nudgeMessage?: string | null;
+}
 
 export interface CardDefinition {
   id: string;
@@ -32,6 +59,7 @@ export interface ActiveRequest {
   turnPlayed: number;
   effectAttached?: EffectType;
   status: 'active' | 'completed' | 'failed';
+  waitingSince?: number; // turn when request entered WAITING_AT_LB
 }
 
 export interface TurnState {
@@ -68,9 +96,10 @@ export interface GameState {
   failedRequests: ActiveRequest[];
   clientDeck: ClientDeckEntry[];
   turnState: TurnState;
+  routingContext: RoutingContext | null;
 }
 
-export const REQUEST_TIMEOUT_TURNS = 3;
+export const REQUEST_TIMEOUT_TURNS = 2;
 export const LB_THROUGHPUT_PER_TURN = 20;
 
 export const REQUEST_POINTS: Record<RequestType, number> = {
@@ -79,10 +108,10 @@ export const REQUEST_POINTS: Record<RequestType, number> = {
   'purchase-ticket': 5,
 };
 
-export const PHASE_CARD_LIMITS: Record<string, number> = {
-  'smoke-test': 1,
-  'ramp-up': 5,
-  'peak-load': 10,
+export const TURN_CARD_LIMITS: Record<number, number> = {
+  1: 5,
+  2: 5,
+  3: 10,
 };
 
 export const REQUIRED_APP_FOR_REQUEST: Record<RequestType, string> = {

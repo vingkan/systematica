@@ -1,7 +1,7 @@
-import type { GameState, GamePhase, TurnState } from '../types';
-import { PHASE_CARD_LIMITS } from '../types';
+import type { GameState, TurnState } from '../types';
+import { TURN_CARD_LIMITS } from '../types';
 import { getCardDef } from '../cards';
-import { resolveActiveRequests } from './resolution';
+import { resolveCarryOver } from './routing';
 
 export function createInitialTurnState(cardLimit: number): TurnState {
   return {
@@ -14,55 +14,50 @@ export function createInitialTurnState(cardLimit: number): TurnState {
   };
 }
 
-function getNextPhaseAndTurn(_currentPhase: GamePhase, currentTurn: number): {
-  phase: GamePhase;
-  turn: number;
-} {
-  // Turn sequence: 1 (smoke) -> 2,3 (ramp) -> 4,5 (peak) -> game-over
-  // Each turn has server then client sub-turns
-  const nextTurn = currentTurn + 1;
+export function startTurn(state: GameState): GameState {
+  // Resolve carry-over (AT_PAYMENT auto-completes, WAITING_AT_LB re-routes or times out)
+  let newState = resolveCarryOver(state);
 
-  if (nextTurn <= 1) return { phase: 'smoke-test', turn: nextTurn };
-  if (nextTurn <= 3) return { phase: 'ramp-up', turn: nextTurn };
-  if (nextTurn <= 5) return { phase: 'peak-load', turn: nextTurn };
-  return { phase: 'game-over', turn: nextTurn };
+  // If resolveCarryOver created a routingContext (for WAITING_AT_LB re-routing),
+  // stay in client mode so the player can route the queued request.
+  // Otherwise, set up for server's turn.
+  if (newState.routingContext) {
+    return { ...newState, activePlayer: 'client' };
+  }
+
+  return { ...newState, activePlayer: 'server' };
 }
 
 export function endClientTurn(state: GameState): GameState {
-  // Resolve all active requests
-  let newState = resolveActiveRequests(state);
+  const nextTurn = state.currentTurn + 1;
 
-  // Advance to next turn
-  const { phase, turn } = getNextPhaseAndTurn(state.phase, state.currentTurn);
-
-  if (phase === 'game-over') {
+  if (nextTurn > 3) {
+    // Game over
     return {
-      ...newState,
+      ...state,
       phase: 'game-over',
-      currentTurn: turn,
+      currentTurn: nextTurn,
       activePlayer: 'server',
+      routingContext: null,
     };
   }
 
-  // Smoke test goes directly to ramp-up (no server turn between)
-  const isSmoke = state.phase === 'smoke-test';
-  const nextPlayer = isSmoke ? 'client' : 'server';
-  const cardLimit = PHASE_CARD_LIMITS[phase] || 5;
+  const cardLimit = TURN_CARD_LIMITS[nextTurn] || 5;
 
   return {
-    ...newState,
-    phase,
-    currentTurn: turn,
-    activePlayer: nextPlayer,
+    ...state,
+    currentTurn: nextTurn,
+    activePlayer: 'server',
+    routingContext: null,
     turnState: {
       ...createInitialTurnState(cardLimit),
-      roundRobinIndex: newState.turnState.roundRobinIndex,
+      roundRobinIndex: state.turnState.roundRobinIndex,
     },
   };
 }
 
 export function endServerTurn(state: GameState): GameState {
-  const cardLimit = PHASE_CARD_LIMITS[state.phase] || 5;
+  const cardLimit = TURN_CARD_LIMITS[state.currentTurn] || 5;
 
   return {
     ...state,
@@ -70,7 +65,6 @@ export function endServerTurn(state: GameState): GameState {
     turnState: {
       ...createInitialTurnState(cardLimit),
       roundRobinIndex: state.turnState.roundRobinIndex,
-      // Reset storage ops and LB throughput for client's turn
     },
   };
 }
@@ -123,7 +117,6 @@ export function removeCard(state: GameState, instanceId: string): GameState {
   if (!card) return state;
 
   const def = getCardDef(card.cardId);
-  // Don't allow removing the LB or application cards
   if (def.type === 'network' || def.type === 'application') return state;
 
   // Move requests on this card back to LB queue
@@ -131,7 +124,6 @@ export function removeCard(state: GameState, instanceId: string): GameState {
     r.location === instanceId ? { ...r, location: 'lb-queue' } : r,
   );
 
-  // Remove card from board and remove connections to it
   const newBoard = state.board
     .filter(c => c.instanceId !== instanceId)
     .map(c => ({
@@ -139,7 +131,6 @@ export function removeCard(state: GameState, instanceId: string): GameState {
       connections: c.connections.filter(conn => conn !== instanceId),
     }));
 
-  // Add card ID back to reserve
   const newReserve = [...state.reserve, card.cardId];
 
   return {
@@ -157,6 +148,7 @@ export function moveAppToCompute(
   targetComputeInstanceId: string,
 ): GameState {
   if (state.activePlayer !== 'server') return state;
+  if (state.turnState.serverActionsUsed >= 1) return state;
 
   const appCard = state.board.find(c => c.instanceId === appInstanceId);
   if (!appCard) return state;
@@ -168,14 +160,12 @@ export function moveAppToCompute(
   const targetDef = getCardDef(targetCompute.cardId);
   if (targetDef.type !== 'compute') return state;
 
-  // Check target has app slots available
   const currentApps = targetCompute.connections.filter(connId => {
     const c = state.board.find(b => b.instanceId === connId);
     return c && getCardDef(c.cardId).type === 'application';
   });
   if (targetDef.appSlots && currentApps.length >= targetDef.appSlots) return state;
 
-  // Remove app from all compute cards' connections, add to target
   const newBoard = state.board.map(c => {
     const def = getCardDef(c.cardId);
     if (def.type === 'compute') {
@@ -188,5 +178,9 @@ export function moveAppToCompute(
     return c;
   });
 
-  return { ...state, board: newBoard };
+  return {
+    ...state,
+    board: newBoard,
+    turnState: { ...state.turnState, serverActionsUsed: 1 },
+  };
 }

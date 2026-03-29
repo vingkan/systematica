@@ -8,12 +8,16 @@ interface CardProps {
   selected?: boolean;
   disabled?: boolean;
   overloaded?: boolean;
+  highlighted?: boolean;
+  active?: boolean;
+  highlightLabel?: string;
+  recommended?: boolean;
   stats?: string;
   badge?: string;
   requestCount?: number;
 }
 
-export function Card({ cardId, size = 'full', onClick, selected, disabled, overloaded, stats, badge, requestCount }: CardProps) {
+export function Card({ cardId, size = 'full', onClick, selected, disabled, overloaded, highlighted, active, highlightLabel, recommended, stats, badge, requestCount }: CardProps) {
   const def = getCardDef(cardId);
   const className = [
     'game-card',
@@ -22,16 +26,47 @@ export function Card({ cardId, size = 'full', onClick, selected, disabled, overl
     selected && 'selected',
     disabled && 'disabled',
     overloaded && 'overloaded',
+    highlighted && 'highlighted',
+    active && 'active-request',
+    recommended && 'recommended',
   ].filter(Boolean).join(' ');
 
   const displayStats = stats || getDefaultStats(def, requestCount);
 
   return (
-    <div className={className} onClick={onClick}>
+    <div className={className} onClick={onClick} style={{ position: 'relative' }}>
       <span className="card-type-label">{def.type}</span>
       <span className="card-name">{def.name}</span>
       {badge && <span className="card-capacity">{badge}</span>}
       <span className="card-stats">{displayStats}</span>
+      {highlighted && highlightLabel && (
+        <span style={{
+          position: 'absolute',
+          bottom: -16,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          fontFamily: "'JetBrains Mono', monospace",
+          fontSize: 8,
+          color: 'var(--info)',
+          letterSpacing: '0.5px',
+          whiteSpace: 'nowrap',
+          textTransform: 'uppercase',
+        }}>
+          {highlightLabel}
+        </span>
+      )}
+      {active && (
+        <span style={{
+          position: 'absolute',
+          top: 4,
+          right: 4,
+          width: 8,
+          height: 8,
+          borderRadius: '50%',
+          background: 'var(--danger)',
+          animation: 'pulse 1.5s infinite',
+        }} />
+      )}
     </div>
   );
 }

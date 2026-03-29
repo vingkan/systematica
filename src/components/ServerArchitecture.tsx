@@ -23,7 +23,9 @@ export function ServerArchitecture({ state, dispatch }: ServerArchitectureProps)
 
   const queuedAtLB = state.requests.filter(r => r.location === 'lb-queue' && r.status === 'active').length;
 
-  const isServerTurn = state.activePlayer === 'server' && state.phase !== 'smoke-test';
+  const isServerTurn = state.activePlayer === 'server' && state.phase === 'play';
+  const isRouting = state.routingContext != null;
+  const routingCtx = state.routingContext;
 
   const getAppsOnCompute = (computeInstanceId: string) => {
     const compute = state.board.find(c => c.instanceId === computeInstanceId);
@@ -49,6 +51,12 @@ export function ServerArchitecture({ state, dispatch }: ServerArchitectureProps)
   };
 
   const handleComputeClick = (computeInstanceId: string) => {
+    // Routing mode: route request to this compute node
+    if (isRouting && routingCtx?.state === 'AT_LB') {
+      dispatch({ type: 'ROUTE_TO_COMPUTE', computeInstanceId });
+      return;
+    }
+    // App movement mode
     if (selectedApp && isServerTurn) {
       dispatch({ type: 'MOVE_APP', appInstanceId: selectedApp, targetComputeInstanceId: computeInstanceId });
       const appCard = state.board.find(c => c.instanceId === selectedApp);
@@ -90,11 +98,13 @@ export function ServerArchitecture({ state, dispatch }: ServerArchitectureProps)
       <div className="arch-layer">
         {networkCards.map(c => {
           const def = getCardDef(c.cardId);
+          const isLBActive = routingCtx?.state === 'AT_LB' || routingCtx?.state === 'WAITING_AT_LB';
           return (
             <Card
               key={c.instanceId}
               cardId={c.cardId}
               size="arch"
+              active={isLBActive}
               badge={`${state.turnState.lbThroughputUsed}/${def.throughputPerTurn}`}
               stats={`${def.lbAlgorithm} | ${queuedAtLB} queued`}
             />
@@ -111,12 +121,16 @@ export function ServerArchitecture({ state, dispatch }: ServerArchitectureProps)
           const load = requestsOnCard(c.instanceId);
           const isOverloaded = def.capacity !== undefined && load >= def.capacity;
           const apps = getAppsOnCompute(c.instanceId);
+          const isValidTarget = routingCtx?.validTargets.includes(c.instanceId) ?? false;
+          const isRecommended = routingCtx?.lbRecommendation === c.instanceId;
+          const hasActiveRequest = routingCtx?.computeNodeId === c.instanceId;
+          const isClickable = isValidTarget || selectedApp != null;
 
           return (
             <div
               key={c.instanceId}
               className={`compute-group ${selectedApp ? 'drop-target' : ''}`}
-              onClick={() => selectedApp ? handleComputeClick(c.instanceId) : undefined}
+              onClick={() => isClickable ? handleComputeClick(c.instanceId) : undefined}
               style={{
                 display: 'flex',
                 flexDirection: 'column',
@@ -132,8 +146,13 @@ export function ServerArchitecture({ state, dispatch }: ServerArchitectureProps)
                 cardId={c.cardId}
                 size="arch"
                 overloaded={isOverloaded}
+                highlighted={isValidTarget}
+                recommended={isRecommended}
+                active={hasActiveRequest}
+                highlightLabel={isValidTarget ? (isRecommended ? 'LB recommends' : 'click to route') : undefined}
                 badge={`${load}/${def.capacity}`}
                 stats={`${def.appSlots} slots | ${load} active`}
+                onClick={() => isClickable ? handleComputeClick(c.instanceId) : undefined}
               />
               {/* Apps as compact row */}
               <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>

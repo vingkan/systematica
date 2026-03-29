@@ -16,7 +16,8 @@ const REQUEST_NAMES: Record<string, string> = {
 
 export function ClientHand({ state, dispatch }: ClientHandProps) {
   const isClientTurn = state.activePlayer === 'client';
-  const canPlay = isClientTurn && state.turnState.cardsPlayedThisTurn < state.turnState.cardLimit;
+  const isRouting = state.routingContext != null;
+  const canPlay = isClientTurn && !isRouting && state.turnState.cardsPlayedThisTurn < state.turnState.cardLimit;
 
   const requestTypes: RequestType[] = ['view-event', 'hold-ticket', 'purchase-ticket'];
   const effectTypes: EffectType[] = ['stampeding-herd', 'race-condition', 'payment-error'];
@@ -35,8 +36,9 @@ export function ClientHand({ state, dispatch }: ClientHandProps) {
       dispatch({ type: 'PLAY_EFFECT', effectType: type });
       addLog('Stampeding Herd! Card limit +10 this turn', 'warning');
     } else if (type === 'race-condition') {
-      const holdTickets = state.requests.filter(
-        r => r.type === 'hold-ticket' && r.status === 'active',
+      // v2: target COMPLETED Hold Tickets
+      const holdTickets = state.completedRequests.filter(
+        r => r.type === 'hold-ticket',
       );
       if (holdTickets.length >= 2) {
         dispatch({
@@ -44,9 +46,9 @@ export function ClientHand({ state, dispatch }: ClientHandProps) {
           effectType: type,
           targets: [holdTickets[0].id, holdTickets[1].id],
         });
-        addLog('Race Condition! 2 Hold Tickets failed', 'error');
+        addLog('Race Condition! 2 completed Hold Tickets reversed', 'error');
       } else {
-        addLog('Need 2 active Hold Tickets for Race Condition', 'warning');
+        addLog('Need 2 completed Hold Tickets for Race Condition', 'warning');
       }
     } else if (type === 'payment-error') {
       const purchase = state.requests.find(
@@ -122,10 +124,12 @@ export function ClientHand({ state, dispatch }: ClientHandProps) {
           const canPlayEffect = canPlay && (() => {
             if (type === 'stampeding-herd') return state.turnState.cardsPlayedThisTurn === 0;
             if (type === 'race-condition') {
-              return state.requests.filter(r => r.type === 'hold-ticket' && r.status === 'active').length >= 2;
+              // v2: target completed Hold Tickets
+              return state.completedRequests.filter(r => r.type === 'hold-ticket').length >= 2;
             }
             if (type === 'payment-error') {
-              return state.requests.some(r => r.type === 'purchase-ticket' && r.status === 'active' && !r.effectAttached);
+              return state.requests.some(r => r.type === 'purchase-ticket' && r.status === 'active' && !r.effectAttached)
+                || state.completedRequests.some(r => r.type === 'purchase-ticket' && !r.effectAttached);
             }
             return true;
           })();

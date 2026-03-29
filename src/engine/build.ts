@@ -27,6 +27,7 @@ export function createInitialGameState(): GameState {
     failedRequests: [],
     clientDeck: INITIAL_CLIENT_DECK.map(e => ({ ...e })),
     turnState: createInitialTurnState(0),
+    routingContext: null,
   };
 }
 
@@ -68,12 +69,13 @@ export function finalizeBuild(state: GameState): GameState {
   return {
     ...state,
     buildStep: 'done',
-    phase: 'smoke-test',
+    phase: 'play',
     currentTurn: 1,
-    activePlayer: 'client',
+    activePlayer: 'server',
     board,
     reserve,
-    turnState: createInitialTurnState(1),
+    turnState: createInitialTurnState(5),
+    routingContext: null,
   };
 }
 

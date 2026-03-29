@@ -133,3 +133,32 @@
   0%, 100% { box-shadow: 0 0 8px rgba(231, 76, 60, 0.2); }
   50% { box-shadow: 0 0 20px rgba(231, 76, 60, 0.5); }
 }
+
+/* Highlighted state (valid routing target) */
+.game-card.highlighted {
+  border-style: solid !important;
+  border-color: var(--info) !important;
+  box-shadow: 0 0 12px rgba(74, 158, 206, 0.3);
+  cursor: pointer;
+}
+.game-card.highlighted:hover {
+  box-shadow: 0 0 20px rgba(74, 158, 206, 0.5);
+  transform: translateY(-2px);
+}
+
+/* LB-recommended target (brighter glow) */
+.game-card.recommended {
+  box-shadow: 0 0 16px rgba(74, 158, 206, 0.5);
+  border-width: 2px !important;
+}
+
+/* Active request indicator (request is at this card) */
+.game-card.active-request {
+  border-color: var(--danger) !important;
+  border-style: solid !important;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
