@@ -90,9 +90,11 @@ interface RequestCardProps {
   remaining: number;
   onClick?: () => void;
   disabled?: boolean;
+  highlighted?: boolean;
+  selected?: boolean;
 }
 
-export function RequestCard({ requestType, remaining, onClick, disabled }: RequestCardProps) {
+export function RequestCard({ requestType, remaining, onClick, disabled, highlighted, selected }: RequestCardProps) {
   const isEffect = ['stampeding-herd', 'race-condition', 'payment-error'].includes(requestType);
   const cardClass = isEffect ? 'effect' : 'request';
   const names: Record<string, string> = {
@@ -107,15 +109,22 @@ export function RequestCard({ requestType, remaining, onClick, disabled }: Reque
     'view-event': '0 pts',
     'hold-ticket': '+1 pt',
     'purchase-ticket': '+5 pts',
-    'stampeding-herd': '+10 cards',
-    'race-condition': 'fail 2 holds',
-    'payment-error': '0 pts on purchase',
+    'stampeding-herd': '+10 cards this turn\nMust play first',
+    'race-condition': 'Attach to 2 Hold Tickets\nbefore playing them',
+    'payment-error': 'Attach to 1 Purchase\nTicket: earns 0 pts',
   };
+
+  const classes = [
+    'game-card', cardClass, 'card-full',
+    disabled && 'disabled',
+    highlighted && 'highlighted',
+    selected && 'selected',
+  ].filter(Boolean).join(' ');
 
   return (
     <div
-      className={`game-card ${cardClass} card-full ${disabled ? 'disabled' : ''}`}
-      onClick={disabled ? undefined : onClick}
+      className={classes}
+      onClick={(disabled && !highlighted) ? undefined : onClick}
     >
       <span className="card-type-label">{isEffect ? 'effect' : 'request'}</span>
       <span className="card-name">{names[requestType] || requestType}</span>

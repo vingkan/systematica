@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import type { GameState } from '../types';
 import { createInitialGameState, finalizeBuild, makeBuildChoice, assignAppToCompute } from '../engine/build';
 import { resetInstanceCounter } from '../engine/build';
-import { createRoutingContext, routeToCompute, advanceRouting, resolveCarryOver, getValidComputeTargets, getLBRecommendation, resetRequestIdCounter } from '../engine/routing';
+import { createRoutingContext, routeToCompute, routeToStorage, advanceRouting, resolveCarryOver, getValidComputeTargets, getLBRecommendation, resetRequestIdCounter } from '../engine/routing';
 import { endServerTurn } from '../engine/turns';
 
 function buildGameState(lbChoice: 'round-robin' | 'least-connections' = 'round-robin', computeChoice: 'cloud-functions' | 'container' = 'container', cache: boolean = false): GameState {
@@ -104,38 +104,28 @@ describe('routeToCompute', () => {
   it('routes to a valid compute node', () => {
     const target = state.routingContext!.validTargets[0];
     const result = routeToCompute(state, target);
-    // Should advance to AT_APP (has matching app)
+    // Should advance to AT_APP (has matching app) with storage targets
     expect(result.routingContext!.state).toBe('AT_APP');
     expect(result.routingContext!.computeNodeId).toBe(target);
+    expect(result.routingContext!.validTargets.length).toBeGreaterThan(0); // Storage targets
   });
 
   it('shows nudge when compute is full', () => {
-    // Fill the container first
-    let s = state;
-    // Clear current routing
-    s = advanceRouting(s); // AT_APP
-    s = advanceRouting(s); // AT_STORAGE
-    s = advanceRouting(s); // COMPLETED
-    s = advanceRouting(s); // clear
+    // Use cloud functions (capacity 1 each) and fill them with fake requests
+    let s = buildGameState('round-robin', 'cloud-functions', false);
+    const computeCards = s.board.filter(c => c.cardId === 'cloud-function');
+    const fakeRequests = computeCards.map((c, i) => ({
+      id: `fake-${i}`,
+      type: 'view-event' as const,
+      location: c.instanceId,
+      turnPlayed: 1,
+      status: 'active' as const,
+    }));
+    s = { ...s, requests: [...s.requests, ...fakeRequests] };
 
-    // Fill to capacity
-    for (let i = 0; i < 8; i++) {
-      s = createRoutingContext(s, 'view-event');
-      if (s.routingContext?.validTargets.length) {
-        s = routeToCompute(s, s.routingContext.validTargets[0]);
-        while (s.routingContext && !['COMPLETED', 'FAILED', 'WAITING_AT_LB'].includes(s.routingContext.state)) {
-          s = advanceRouting(s);
-        }
-        s = advanceRouting(s);
-      }
-    }
-
-    // Now try to route to the full container
     s = createRoutingContext(s, 'view-event');
-    if (s.routingContext?.state === 'WAITING_AT_LB') {
-      // All full, which is expected — WAITING_AT_LB has no targets
-      expect(s.routingContext.validTargets.length).toBe(0);
-    }
+    expect(s.routingContext!.state).toBe('WAITING_AT_LB');
+    expect(s.routingContext!.validTargets.length).toBe(0);
   });
 
   it('fails when no matching app on compute', () => {
@@ -164,89 +154,103 @@ describe('routeToCompute', () => {
   });
 });
 
-describe('advanceRouting', () => {
+// Helper: fully resolve a request through the interactive routing flow
+function resolveThrough(s: GameState): GameState {
+  // AT_APP: route to storage interactively
+  if (s.routingContext?.state === 'AT_APP' && s.routingContext.validTargets.length > 0) {
+    s = routeToStorage(s, s.routingContext.validTargets[0]);
+  }
+  // Clear terminal states
+  if (s.routingContext && ['COMPLETED', 'FAILED'].includes(s.routingContext.state)) {
+    s = advanceRouting(s);
+  }
+  if (s.routingContext?.state === 'AT_PAYMENT') {
+    s = advanceRouting(s);
+  }
+  return s;
+}
+
+describe('routeToStorage', () => {
   let state: GameState;
 
   beforeEach(() => {
     state = buildGameState('round-robin', 'container', false);
     state = createRoutingContext(state, 'hold-ticket');
-    // Route to compute
     const target = state.routingContext!.validTargets[0];
     state = routeToCompute(state, target);
   });
 
-  it('advances from AT_APP to AT_STORAGE', () => {
+  it('AT_APP shows valid storage targets', () => {
     expect(state.routingContext!.state).toBe('AT_APP');
-    const result = advanceRouting(state);
-    expect(result.routingContext!.state).toBe('AT_STORAGE');
+    expect(state.routingContext!.validTargets.length).toBeGreaterThan(0);
   });
 
-  it('advances from AT_STORAGE to COMPLETED for non-purchase requests', () => {
-    let s = advanceRouting(state); // AT_STORAGE
-    s = advanceRouting(s); // COMPLETED
-    expect(s.routingContext!.state).toBe('COMPLETED');
-    expect(s.completedRequests.length).toBe(1);
+  it('routes to storage and completes for non-purchase', () => {
+    const storageTarget = state.routingContext!.validTargets[0];
+    const result = routeToStorage(state, storageTarget);
+    expect(result.routingContext!.state).toBe('COMPLETED');
+    expect(result.completedRequests.length).toBe(1);
   });
 
-  it('advances from AT_STORAGE to AT_PAYMENT for purchase tickets', () => {
+  it('routes to AT_PAYMENT for purchase tickets', () => {
     let s = buildGameState('round-robin', 'container', false);
     s = createRoutingContext(s, 'purchase-ticket');
-    const target = s.routingContext!.validTargets[0];
-    s = routeToCompute(s, target);
-    s = advanceRouting(s); // AT_STORAGE
-    s = advanceRouting(s); // AT_PAYMENT
+    s = routeToCompute(s, s.routingContext!.validTargets[0]);
+    expect(s.routingContext!.state).toBe('AT_APP');
+    s = routeToStorage(s, s.routingContext!.validTargets[0]);
     expect(s.routingContext!.state).toBe('AT_PAYMENT');
   });
 
   it('parks AT_PAYMENT and clears routing context', () => {
     let s = buildGameState('round-robin', 'container', false);
     s = createRoutingContext(s, 'purchase-ticket');
-    const target = s.routingContext!.validTargets[0];
-    s = routeToCompute(s, target);
-    s = advanceRouting(s); // AT_STORAGE
-    s = advanceRouting(s); // AT_PAYMENT
-    s = advanceRouting(s); // parks, clears context
+    s = routeToCompute(s, s.routingContext!.validTargets[0]);
+    s = routeToStorage(s, s.routingContext!.validTargets[0]);
+    s = advanceRouting(s); // parks
     expect(s.routingContext).toBeNull();
-    // Request should still be in active requests
     expect(s.requests.some(r => r.type === 'purchase-ticket')).toBe(true);
   });
 
   it('fails when storage throughput is exhausted', () => {
-    // Exhaust writes on relational DB (3 writes per turn)
     let s = state;
-    // Complete the first request
-    s = advanceRouting(s); // AT_STORAGE
-    s = advanceRouting(s); // COMPLETED
-    s = advanceRouting(s); // clear
+    // Complete first hold-ticket
+    s = resolveThrough(s);
 
-    // Play 2 more hold-tickets to use up writes
+    // Play 2 more to exhaust writes (relational DB has 3 writes/turn)
     for (let i = 0; i < 2; i++) {
       s = createRoutingContext(s, 'hold-ticket');
       if (s.routingContext?.state === 'AT_LB') {
         s = routeToCompute(s, s.routingContext.validTargets[0]);
-        s = advanceRouting(s); // AT_STORAGE
-        s = advanceRouting(s); // COMPLETED
-        s = advanceRouting(s); // clear
+        s = resolveThrough(s);
       }
     }
 
-    // 4th write should fail (relational DB has 3 writes/turn)
+    // 4th write should fail
     s = createRoutingContext(s, 'hold-ticket');
     if (s.routingContext?.state === 'AT_LB') {
       s = routeToCompute(s, s.routingContext.validTargets[0]);
-      s = advanceRouting(s); // AT_STORAGE
-      s = advanceRouting(s); // FAILED
-      expect(s.routingContext!.state).toBe('FAILED');
-      expect(s.failedRequests.length).toBeGreaterThan(0);
+      if (s.routingContext?.state === 'AT_APP') {
+        s = routeToStorage(s, s.routingContext.validTargets[0]);
+        expect(s.routingContext!.state).toBe('FAILED');
+        expect(s.failedRequests.length).toBeGreaterThan(0);
+      }
     }
   });
 
   it('clears terminal states', () => {
-    let s = advanceRouting(state); // AT_STORAGE
-    s = advanceRouting(s); // COMPLETED
+    const storageTarget = state.routingContext!.validTargets[0];
+    let s = routeToStorage(state, storageTarget);
     expect(s.routingContext!.state).toBe('COMPLETED');
-    s = advanceRouting(s); // clear
+    s = advanceRouting(s);
     expect(s.routingContext).toBeNull();
+  });
+
+  it('shows scoring info in completion step', () => {
+    const storageTarget = state.routingContext!.validTargets[0];
+    const s = routeToStorage(state, storageTarget);
+    const completedStep = s.routingContext!.steps.find(step => step.state === 'COMPLETED');
+    expect(completedStep).toBeDefined();
+    expect(completedStep!.description).toContain('pt');
   });
 });
 
@@ -284,12 +288,13 @@ describe('getLBRecommendation', () => {
 describe('resolveCarryOver', () => {
   it('auto-completes purchase tickets from previous turns', () => {
     let state = buildGameState('round-robin', 'container', false);
-    // Play and route a purchase ticket
+    // Play and route a purchase ticket through interactive steps
     state = createRoutingContext(state, 'purchase-ticket');
     state = routeToCompute(state, state.routingContext!.validTargets[0]);
-    state = advanceRouting(state); // AT_STORAGE
-    state = advanceRouting(state); // AT_PAYMENT
-    state = advanceRouting(state); // park
+    // AT_APP is interactive: route to storage
+    state = routeToStorage(state, state.routingContext!.validTargets[0]);
+    // Now AT_PAYMENT, park it
+    state = advanceRouting(state);
 
     // Simulate advancing to next turn
     const nextTurnState = { ...state, currentTurn: state.currentTurn + 1 };

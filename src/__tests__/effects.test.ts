@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import type { GameState } from '../types';
 import { createInitialGameState, finalizeBuild, makeBuildChoice, assignAppToCompute, resetInstanceCounter } from '../engine/build';
-import { createRoutingContext, routeToCompute, advanceRouting, resetRequestIdCounter } from '../engine/routing';
-import { playEffect } from '../engine/effects';
+import { createRoutingContext, routeToCompute, routeToStorage, advanceRouting, resetRequestIdCounter } from '../engine/routing';
+import { playStampedingherd, selectEffect, attachEffect } from '../engine/effects';
 import { endServerTurn } from '../engine/turns';
 
 function buildGameState(): GameState {
@@ -22,12 +22,17 @@ function playAndResolve(state: GameState, type: 'view-event' | 'hold-ticket' | '
   let s = createRoutingContext(state, type);
   if (s.routingContext?.state === 'AT_LB' && s.routingContext.validTargets.length > 0) {
     s = routeToCompute(s, s.routingContext.validTargets[0]);
-    while (s.routingContext && !['COMPLETED', 'FAILED', 'WAITING_AT_LB'].includes(s.routingContext.state)) {
+    // AT_APP is now interactive - route to storage
+    if (s.routingContext?.state === 'AT_APP' && s.routingContext.validTargets.length > 0) {
+      s = routeToStorage(s, s.routingContext.validTargets[0]);
+    }
+    // Clear terminal states
+    if (s.routingContext && ['COMPLETED', 'FAILED'].includes(s.routingContext.state)) {
       s = advanceRouting(s);
     }
-    // For AT_PAYMENT, advance to park
-    if (s.routingContext?.state === 'COMPLETED' || s.routingContext?.state === 'FAILED') {
-      s = advanceRouting(s); // clear
+    // Park AT_PAYMENT
+    if (s.routingContext?.state === 'AT_PAYMENT') {
+      s = advanceRouting(s);
     }
   }
   return s;
@@ -36,82 +41,89 @@ function playAndResolve(state: GameState, type: 'view-event' | 'hold-ticket' | '
 describe('Stampeding Herd', () => {
   it('increases card limit by 10 when played first', () => {
     const state = buildGameState();
-    const result = playEffect(state, 'stampeding-herd');
+    const result = playStampedingherd(state);
     expect(result.turnState.cardLimit).toBe(state.turnState.cardLimit + 10);
     expect(result.turnState.cardsPlayedThisTurn).toBe(1);
   });
 
   it('rejects if not played first', () => {
     let state = buildGameState();
-    // Play a request first
     state = playAndResolve(state, 'view-event');
-    const result = playEffect(state, 'stampeding-herd');
-    // Card limit should be unchanged
+    const result = playStampedingherd(state);
     expect(result.turnState.cardLimit).toBe(state.turnState.cardLimit);
   });
 });
 
-describe('Race Condition', () => {
-  let state: GameState;
+describe('Effect Attachment: Race Condition', () => {
+  it('attaches to hold-ticket cards in hand', () => {
+    let state = buildGameState();
+    state = selectEffect(state, 'race-condition');
+    expect(state.selectedEffect).toBe('race-condition');
 
-  beforeEach(() => {
-    state = buildGameState();
-    // Complete 2 hold-tickets
-    state = playAndResolve(state, 'hold-ticket');
-    state = playAndResolve(state, 'hold-ticket');
+    // Attach to first hold ticket
+    state = attachEffect(state, 'hold-ticket');
+    expect(state.effectAttachments.length).toBe(1);
+    expect(state.effectAttachments[0].effectType).toBe('race-condition');
+
+    // Attach to second hold ticket (should consume the RC card)
+    state = attachEffect(state, 'hold-ticket');
+    expect(state.effectAttachments.length).toBe(2);
+    expect(state.selectedEffect).toBeNull(); // Cleared after 2
   });
 
-  it('moves 2 completed hold-tickets to failed', () => {
-    expect(state.completedRequests.filter(r => r.type === 'hold-ticket').length).toBeGreaterThanOrEqual(2);
-    const targets = state.completedRequests
-      .filter(r => r.type === 'hold-ticket')
-      .slice(0, 2)
-      .map(r => r.id);
+  it('causes hold-ticket to fail on resolution', () => {
+    let state = buildGameState();
+    // Attach race condition to hold-ticket
+    state = selectEffect(state, 'race-condition');
+    state = attachEffect(state, 'hold-ticket');
+    state = attachEffect(state, 'hold-ticket');
 
-    const result = playEffect(state, 'race-condition', targets);
-    expect(result.completedRequests.filter(r => r.type === 'hold-ticket').length).toBe(
-      state.completedRequests.filter(r => r.type === 'hold-ticket').length - 2
-    );
-    expect(result.failedRequests.filter(r => r.effectAttached === 'race-condition').length).toBe(2);
-  });
+    // Play a hold-ticket (should have RC attached)
+    state = createRoutingContext(state, 'hold-ticket');
+    expect(state.requests.some(r => r.effectAttached === 'race-condition')).toBe(true);
 
-  it('rejects when fewer than 2 completed hold-tickets', () => {
-    let s = buildGameState();
-    s = playAndResolve(s, 'hold-ticket');
-    const targets = s.completedRequests
-      .filter(r => r.type === 'hold-ticket')
-      .map(r => r.id);
-    if (targets.length < 2) {
-      const result = playEffect(s, 'race-condition', [targets[0], 'fake-id']);
-      // Should be unchanged
-      expect(result.completedRequests.length).toBe(s.completedRequests.length);
+    // Route through system
+    if (state.routingContext?.state === 'AT_LB') {
+      state = routeToCompute(state, state.routingContext.validTargets[0]);
+      if (state.routingContext?.state === 'AT_APP') {
+        state = routeToStorage(state, state.routingContext.validTargets[0]);
+      }
+    }
+
+    // Should be FAILED due to race condition
+    if (state.routingContext) {
+      expect(state.routingContext.state === 'COMPLETED' || state.routingContext.state === 'FAILED').toBe(true);
+      // Race condition causes failure
+      expect(state.failedRequests.some(r => r.effectAttached === 'race-condition')).toBe(true);
     }
   });
 });
 
-describe('Payment Error', () => {
-  it('attaches effect to an active purchase ticket', () => {
+describe('Effect Attachment: Payment Error', () => {
+  it('attaches to purchase-ticket card', () => {
     let state = buildGameState();
-    // Play a purchase ticket but don't fully resolve
-    state = createRoutingContext(state, 'purchase-ticket');
-    if (state.routingContext?.state === 'AT_LB') {
-      state = routeToCompute(state, state.routingContext.validTargets[0]);
-      state = advanceRouting(state); // AT_STORAGE
-      state = advanceRouting(state); // AT_PAYMENT
-      state = advanceRouting(state); // park
-    }
+    state = selectEffect(state, 'payment-error');
+    expect(state.selectedEffect).toBe('payment-error');
 
-    const purchaseReq = state.requests.find(r => r.type === 'purchase-ticket');
-    if (purchaseReq) {
-      const result = playEffect(state, 'payment-error', [purchaseReq.id]);
-      const updated = result.requests.find(r => r.id === purchaseReq.id);
-      expect(updated?.effectAttached).toBe('payment-error');
-    }
+    state = attachEffect(state, 'purchase-ticket');
+    expect(state.effectAttachments.length).toBe(1);
+    expect(state.effectAttachments[0].effectType).toBe('payment-error');
+    expect(state.selectedEffect).toBeNull();
   });
 
-  it('rejects when no valid target', () => {
-    const state = buildGameState();
-    const result = playEffect(state, 'payment-error', ['nonexistent']);
-    expect(result).toEqual(state);
+  it('rejects attachment to wrong card type', () => {
+    let state = buildGameState();
+    state = selectEffect(state, 'payment-error');
+    state = attachEffect(state, 'hold-ticket'); // Wrong type
+    expect(state.effectAttachments.length).toBe(0);
+  });
+
+  it('shows payment error in resolution steps', () => {
+    let state = buildGameState();
+    state = selectEffect(state, 'payment-error');
+    state = attachEffect(state, 'purchase-ticket');
+
+    state = createRoutingContext(state, 'purchase-ticket');
+    expect(state.requests.some(r => r.effectAttached === 'payment-error')).toBe(true);
   });
 });

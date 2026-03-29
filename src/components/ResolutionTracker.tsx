@@ -11,7 +11,7 @@ const stateIcons: Record<string, string> = {
 };
 
 export function ResolutionTracker({ routingContext }: ResolutionTrackerProps) {
-  const isTerminal = routingContext.state === 'COMPLETED' || routingContext.state === 'FAILED' || routingContext.state === 'WAITING_AT_LB';
+  const isTerminal = routingContext.state === 'COMPLETED' || routingContext.state === 'FAILED' || routingContext.state === 'WAITING_AT_LB' || routingContext.state === 'AT_PAYMENT';
   const isSuccess = routingContext.state === 'COMPLETED';
   const isFailed = routingContext.state === 'FAILED';
 
@@ -130,7 +130,22 @@ export function ResolutionTracker({ routingContext }: ResolutionTrackerProps) {
       )}
 
       {/* Terminal state action hint */}
-      {isTerminal && routingContext.state !== 'WAITING_AT_LB' && (
+      {routingContext.state === 'AT_PAYMENT' && (
+        <div style={{
+          fontFamily: "'JetBrains Mono', monospace",
+          fontSize: 11,
+          padding: '10px 14px',
+          borderRadius: 'var(--radius-md)',
+          textAlign: 'center' as const,
+          background: 'rgba(212, 168, 52, 0.12)',
+          border: '1px solid rgba(212, 168, 52, 0.3)',
+          color: 'var(--application)',
+        }}>
+          Payment processing... completes at start of next turn. Click to continue playing.
+        </div>
+      )}
+
+      {isTerminal && routingContext.state !== 'WAITING_AT_LB' && routingContext.state !== 'AT_PAYMENT' && (
         <div style={{
           fontFamily: "'DM Sans', sans-serif",
           fontSize: 11,

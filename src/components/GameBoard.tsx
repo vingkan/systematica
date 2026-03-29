@@ -1,4 +1,3 @@
-import { useEffect, useRef } from 'react';
 import type { GameState } from '../types';
 import type { GameAction } from '../reducer';
 import { PhaseBar } from './PhaseBar';
@@ -15,46 +14,16 @@ interface GameBoardProps {
 export function GameBoard({ state, dispatch }: GameBoardProps) {
   const isRouting = state.routingContext != null;
   const ctx = state.routingContext;
-  const autoAdvanceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Auto-advance routing for non-interactive states
-  useEffect(() => {
-    if (!ctx) return;
-
-    // States that auto-advance after 300ms
-    const autoAdvanceStates = ['AT_APP', 'AT_STORAGE', 'AT_PAYMENT'];
-    if (autoAdvanceStates.includes(ctx.state)) {
-      autoAdvanceTimer.current = setTimeout(() => {
-        dispatch({ type: 'ADVANCE_ROUTING' });
-      }, 300);
-    }
-
-    return () => {
-      if (autoAdvanceTimer.current) {
-        clearTimeout(autoAdvanceTimer.current);
-        autoAdvanceTimer.current = null;
-      }
-    };
-  }, [ctx?.state, ctx?.requestId, ctx?.steps.length, dispatch]);
-
-  // Click-to-skip: advance through auto-steps instantly
+  // Click-to-dismiss terminal states
   const handleBoardClick = () => {
     if (!ctx) return;
-    const terminalStates = ['COMPLETED', 'FAILED', 'WAITING_AT_LB'];
+    const terminalStates = ['COMPLETED', 'FAILED', 'WAITING_AT_LB', 'AT_PAYMENT'];
     if (terminalStates.includes(ctx.state)) {
-      // Clear the routing context
-      dispatch({ type: 'ADVANCE_ROUTING' });
-      return;
-    }
-    // Skip auto-advancing steps
-    const autoStates = ['AT_APP', 'AT_STORAGE', 'AT_PAYMENT'];
-    if (autoStates.includes(ctx.state)) {
-      if (autoAdvanceTimer.current) {
-        clearTimeout(autoAdvanceTimer.current);
-        autoAdvanceTimer.current = null;
-      }
       dispatch({ type: 'ADVANCE_ROUTING' });
     }
+    // No more auto-advancing — AT_APP (storage selection) and AT_LB (compute selection)
+    // are both interactive and handled by card click handlers
   };
 
   return (

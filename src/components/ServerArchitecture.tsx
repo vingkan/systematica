@@ -214,12 +214,23 @@ export function ServerArchitecture({ state, dispatch }: ServerArchitectureProps)
         {storageCards.map(c => {
           const def = getCardDef(c.cardId);
           const ops = state.turnState.storageOps[c.instanceId] || { reads: 0, writes: 0 };
+          const isStorageTarget = routingCtx?.state === 'AT_APP' && routingCtx.validTargets.includes(c.instanceId);
+
+          const handleStorageClick = () => {
+            if (isStorageTarget) {
+              dispatch({ type: 'ROUTE_TO_STORAGE', storageInstanceId: c.instanceId });
+            }
+          };
+
           return (
             <Card
               key={c.instanceId}
               cardId={c.cardId}
               size="arch"
+              highlighted={isStorageTarget}
+              highlightLabel={isStorageTarget ? 'click to route' : undefined}
               stats={`r: ${ops.reads}/${def.readsPerTurn}  w: ${ops.writes}/${def.writesPerTurn}`}
+              onClick={handleStorageClick}
             />
           );
         })}

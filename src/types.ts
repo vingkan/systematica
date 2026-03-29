@@ -83,6 +83,11 @@ export interface ClientDeckEntry {
   remaining: number;
 }
 
+export interface EffectAttachment {
+  effectType: EffectType;
+  requestType: RequestType;
+}
+
 export interface GameState {
   phase: GamePhase;
   buildStep: BuildStep;
@@ -97,6 +102,8 @@ export interface GameState {
   clientDeck: ClientDeckEntry[];
   turnState: TurnState;
   routingContext: RoutingContext | null;
+  effectAttachments: EffectAttachment[];
+  selectedEffect: EffectType | null;
 }
 
 export const REQUEST_TIMEOUT_TURNS = 2;

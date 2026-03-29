@@ -28,6 +28,8 @@ export function createInitialGameState(): GameState {
     clientDeck: INITIAL_CLIENT_DECK.map(e => ({ ...e })),
     turnState: createInitialTurnState(0),
     routingContext: null,
+    effectAttachments: [],
+    selectedEffect: null,
   };
 }
 
@@ -76,6 +78,8 @@ export function finalizeBuild(state: GameState): GameState {
     reserve,
     turnState: createInitialTurnState(5),
     routingContext: null,
+    effectAttachments: [],
+    selectedEffect: null,
   };
 }
 

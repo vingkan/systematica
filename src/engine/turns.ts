@@ -1,6 +1,6 @@
 import type { GameState, TurnState } from '../types';
 import { TURN_CARD_LIMITS } from '../types';
-import { getCardDef } from '../cards';
+import { getCardDef, INITIAL_CLIENT_DECK } from '../cards';
 import { resolveCarryOver } from './routing';
 
 export function createInitialTurnState(cardLimit: number): TurnState {
@@ -49,6 +49,9 @@ export function endClientTurn(state: GameState): GameState {
     currentTurn: nextTurn,
     activePlayer: 'server',
     routingContext: null,
+    clientDeck: INITIAL_CLIENT_DECK.map(e => ({ ...e })),
+    effectAttachments: [],
+    selectedEffect: null,
     turnState: {
       ...createInitialTurnState(cardLimit),
       roundRobinIndex: state.turnState.roundRobinIndex,
@@ -148,7 +151,9 @@ export function moveAppToCompute(
   targetComputeInstanceId: string,
 ): GameState {
   if (state.activePlayer !== 'server') return state;
-  if (state.turnState.serverActionsUsed >= 1) return state;
+  // Moving apps is FREE — it doesn't cost the server's 1 action per turn.
+  // Only add/remove costs an action. This lets the server add a new container
+  // from reserve and then move apps to it in the same turn.
 
   const appCard = state.board.find(c => c.instanceId === appInstanceId);
   if (!appCard) return state;
@@ -178,9 +183,5 @@ export function moveAppToCompute(
     return c;
   });
 
-  return {
-    ...state,
-    board: newBoard,
-    turnState: { ...state.turnState, serverActionsUsed: 1 },
-  };
+  return { ...state, board: newBoard };
 }

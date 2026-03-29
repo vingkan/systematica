@@ -92,12 +92,10 @@ describe('startTurn', () => {
 });
 
 describe('moveAppToCompute', () => {
-  it('costs the server action for the turn', () => {
-    // Manually add a second container to the board so we can move apps between them
+  it('does NOT cost the server action (moving apps is free)', () => {
     let state = buildGameState();
     const secondContainer = { instanceId: 'container-extra', cardId: 'container', connections: [] as string[] };
     state = { ...state, board: [...state.board, secondContainer] };
-    // Connect LB to new container
     state = {
       ...state,
       board: state.board.map(c =>
@@ -107,7 +105,6 @@ describe('moveAppToCompute', () => {
       ),
     };
 
-    // Find an app on the original container
     const origContainer = state.board.find(c => c.cardId === 'container' && c.instanceId !== 'container-extra');
     const appOnOrig = origContainer?.connections.find(connId => {
       const c = state.board.find(b => b.instanceId === connId);
@@ -117,19 +114,28 @@ describe('moveAppToCompute', () => {
     if (appOnOrig) {
       expect(state.turnState.serverActionsUsed).toBe(0);
       const result = moveAppToCompute(state, appOnOrig, 'container-extra');
-      expect(result.turnState.serverActionsUsed).toBe(1);
+      // Moving apps is free — serverActionsUsed stays 0
+      expect(result.turnState.serverActionsUsed).toBe(0);
     }
   });
 
-  it('blocks when server action already used', () => {
+  it('works even after server action is used (add then move)', () => {
     let state = buildGameState();
+    // Simulate having already used the action to add a card
     state = { ...state, turnState: { ...state.turnState, serverActionsUsed: 1 } };
-    const appCard = state.board.find(c => getCardDef(c.cardId).type === 'application');
-    const computeCard = state.board.find(c => getCardDef(c.cardId).type === 'compute');
+    const secondContainer = { instanceId: 'container-extra', cardId: 'container', connections: [] as string[] };
+    state = { ...state, board: [...state.board, secondContainer] };
 
-    if (appCard && computeCard) {
-      const result = moveAppToCompute(state, appCard.instanceId, computeCard.instanceId);
-      expect(result).toEqual(state); // Unchanged
+    const origContainer = state.board.find(c => c.cardId === 'container' && c.instanceId !== 'container-extra');
+    const appOnOrig = origContainer?.connections.find(connId => {
+      const c = state.board.find(b => b.instanceId === connId);
+      return c && getCardDef(c.cardId).type === 'application';
+    });
+
+    if (appOnOrig) {
+      const result = moveAppToCompute(state, appOnOrig, 'container-extra');
+      // Should succeed — move is free even after add
+      expect(result.board).not.toEqual(state.board);
     }
   });
 });

@@ -18,49 +18,62 @@ export function ClientHand({ state, dispatch }: ClientHandProps) {
   const isClientTurn = state.activePlayer === 'client';
   const isRouting = state.routingContext != null;
   const canPlay = isClientTurn && !isRouting && state.turnState.cardsPlayedThisTurn < state.turnState.cardLimit;
+  const selectedEffect = state.selectedEffect;
 
   const requestTypes: RequestType[] = ['view-event', 'hold-ticket', 'purchase-ticket'];
   const effectTypes: EffectType[] = ['stampeding-herd', 'race-condition', 'payment-error'];
 
+  // Count pending attachments per request type
+  const attachmentsFor = (type: RequestType) =>
+    state.effectAttachments.filter(a => a.requestType === type).length;
+
   const handlePlayRequest = (type: RequestType) => {
     if (!canPlay) return;
-    dispatch({ type: 'PLAY_REQUEST', requestType: type });
 
-    // Log feedback based on what the request name is
+    // If an effect is selected, attach it to this request card instead of playing
+    if (selectedEffect) {
+      const validTarget =
+        (selectedEffect === 'race-condition' && type === 'hold-ticket') ||
+        (selectedEffect === 'payment-error' && type === 'purchase-ticket');
+      if (validTarget) {
+        dispatch({ type: 'ATTACH_EFFECT', requestType: type });
+        addLog(`${selectedEffect === 'race-condition' ? 'Race Condition' : 'Payment Error'} attached to ${REQUEST_NAMES[type]}`, 'warning');
+        return;
+      }
+    }
+
+    dispatch({ type: 'PLAY_REQUEST', requestType: type });
     const name = REQUEST_NAMES[type] || type;
-    addLog(`Played ${name} → routed to LB`, 'info');
+    const attachment = state.effectAttachments.find(a => a.requestType === type);
+    if (attachment) {
+      addLog(`Played ${name} with ${attachment.effectType === 'race-condition' ? 'Race Condition' : 'Payment Error'} attached!`, 'error');
+    } else {
+      addLog(`Played ${name} → routed to LB`, 'info');
+    }
   };
 
   const handlePlayEffect = (type: EffectType) => {
     if (type === 'stampeding-herd') {
-      dispatch({ type: 'PLAY_EFFECT', effectType: type });
+      dispatch({ type: 'PLAY_STAMPEDING_HERD' });
       addLog('Stampeding Herd! Card limit +10 this turn', 'warning');
-    } else if (type === 'race-condition') {
-      // v2: target COMPLETED Hold Tickets
-      const holdTickets = state.completedRequests.filter(
-        r => r.type === 'hold-ticket',
-      );
-      if (holdTickets.length >= 2) {
-        dispatch({
-          type: 'PLAY_EFFECT',
-          effectType: type,
-          targets: [holdTickets[0].id, holdTickets[1].id],
-        });
-        addLog('Race Condition! 2 completed Hold Tickets reversed', 'error');
+    } else {
+      // Toggle selection for attachment-type effects
+      dispatch({ type: 'SELECT_EFFECT', effectType: type });
+      if (selectedEffect === type) {
+        addLog('Effect deselected', 'info');
       } else {
-        addLog('Need 2 completed Hold Tickets for Race Condition', 'warning');
-      }
-    } else if (type === 'payment-error') {
-      const purchase = state.requests.find(
-        r => r.type === 'purchase-ticket' && r.status === 'active' && !r.effectAttached,
-      );
-      if (purchase) {
-        dispatch({ type: 'PLAY_EFFECT', effectType: type, targets: [purchase.id] });
-        addLog('Payment Error attached to Purchase Ticket', 'error');
-      } else {
-        addLog('No active Purchase Ticket to attach Payment Error', 'warning');
+        const targetType = type === 'race-condition' ? 'Hold Ticket' : 'Purchase Ticket';
+        addLog(`Select a ${targetType} card to attach ${type === 'race-condition' ? 'Race Condition' : 'Payment Error'}`, 'warning');
       }
     }
+  };
+
+  // Determine which request cards should be highlighted for effect attachment
+  const isHighlightedForAttachment = (type: RequestType): boolean => {
+    if (!selectedEffect) return false;
+    if (selectedEffect === 'race-condition' && type === 'hold-ticket') return true;
+    if (selectedEffect === 'payment-error' && type === 'purchase-ticket') return true;
+    return false;
   };
 
   return (
@@ -70,7 +83,7 @@ export function ClientHand({ state, dispatch }: ClientHandProps) {
       </div>
 
       {/* Turn status */}
-      {isClientTurn && (
+      {isClientTurn && !selectedEffect && (
         <div style={{
           fontFamily: "'JetBrains Mono', monospace",
           fontSize: 11,
@@ -83,6 +96,29 @@ export function ClientHand({ state, dispatch }: ClientHandProps) {
           textAlign: 'center',
         }}>
           Your turn: click a card to play it ({state.turnState.cardsPlayedThisTurn}/{state.turnState.cardLimit} played)
+        </div>
+      )}
+
+      {/* Effect attachment mode indicator */}
+      {selectedEffect && (
+        <div style={{
+          fontFamily: "'JetBrains Mono', monospace",
+          fontSize: 11,
+          color: 'var(--effect)',
+          marginBottom: 'var(--sp-sm)',
+          padding: '6px 8px',
+          background: 'var(--effect-bg)',
+          border: '1px solid var(--effect-border)',
+          borderRadius: 'var(--radius-sm)',
+          textAlign: 'center',
+        }}>
+          {selectedEffect === 'race-condition'
+            ? `Click a Hold Ticket to attach Race Condition (${state.effectAttachments.filter(a => a.effectType === 'race-condition').length}/2 attached)`
+            : 'Click a Purchase Ticket to attach Payment Error'}
+          <br />
+          <span style={{ fontSize: 9, color: 'var(--text-muted)' }}>
+            Click the effect card again to cancel
+          </span>
         </div>
       )}
 
@@ -106,14 +142,40 @@ export function ClientHand({ state, dispatch }: ClientHandProps) {
         {requestTypes.map(type => {
           const entry = state.clientDeck.find(e => e.type === type);
           if (!entry || entry.remaining <= 0) return null;
+          const highlighted = isHighlightedForAttachment(type);
+          const numAttachments = attachmentsFor(type);
+
           return (
-            <RequestCard
-              key={type}
-              requestType={type}
-              remaining={entry.remaining}
-              onClick={() => handlePlayRequest(type)}
-              disabled={!canPlay}
-            />
+            <div key={type} style={{ position: 'relative' }}>
+              <RequestCard
+                requestType={type}
+                remaining={entry.remaining}
+                onClick={() => handlePlayRequest(type)}
+                disabled={!canPlay && !highlighted}
+                highlighted={highlighted}
+              />
+              {numAttachments > 0 && (
+                <div style={{
+                  position: 'absolute',
+                  top: -4,
+                  right: -4,
+                  background: 'var(--effect)',
+                  color: '#fff',
+                  borderRadius: '50%',
+                  width: 18,
+                  height: 18,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: 10,
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontWeight: 700,
+                  zIndex: 10,
+                }}>
+                  {numAttachments}
+                </div>
+              )}
+            </div>
           );
         })}
 
@@ -123,14 +185,9 @@ export function ClientHand({ state, dispatch }: ClientHandProps) {
 
           const canPlayEffect = canPlay && (() => {
             if (type === 'stampeding-herd') return state.turnState.cardsPlayedThisTurn === 0;
-            if (type === 'race-condition') {
-              // v2: target completed Hold Tickets
-              return state.completedRequests.filter(r => r.type === 'hold-ticket').length >= 2;
-            }
-            if (type === 'payment-error') {
-              return state.requests.some(r => r.type === 'purchase-ticket' && r.status === 'active' && !r.effectAttached)
-                || state.completedRequests.some(r => r.type === 'purchase-ticket' && !r.effectAttached);
-            }
+            // Attachment effects: always playable if you have them (they just select)
+            if (type === 'race-condition') return true;
+            if (type === 'payment-error') return true;
             return true;
           })();
 
@@ -141,6 +198,7 @@ export function ClientHand({ state, dispatch }: ClientHandProps) {
               remaining={entry.remaining}
               onClick={() => handlePlayEffect(type)}
               disabled={!canPlayEffect}
+              selected={selectedEffect === type}
             />
           );
         })}
@@ -158,7 +216,11 @@ export function ClientHand({ state, dispatch }: ClientHandProps) {
               return (
                 <span key={req.id} className="request-token request" title={`Turn ${req.turnPlayed}, at: ${req.location}`}>
                   {req.type.split('-').map(w => w[0].toUpperCase()).join('')}
-                  {req.effectAttached === 'payment-error' && ' !'}
+                  {req.effectAttached && (
+                    <span style={{ color: 'var(--effect)', marginLeft: 2 }}>
+                      {req.effectAttached === 'payment-error' ? '!' : req.effectAttached === 'race-condition' ? 'R' : ''}
+                    </span>
+                  )}
                   <span style={{ opacity: 0.5, marginLeft: 2 }}>
                     {loc}
                   </span>

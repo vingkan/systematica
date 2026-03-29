@@ -1,7 +1,7 @@
 import type { GameState, BuildStep, RequestType, EffectType } from './types';
 import { createInitialGameState, makeBuildChoice, assignAppToCompute, finalizeBuild } from './engine/build';
-import { createRoutingContext, routeToCompute, advanceRouting } from './engine/routing';
-import { playEffect } from './engine/effects';
+import { createRoutingContext, routeToCompute, routeToStorage, advanceRouting } from './engine/routing';
+import { playStampedingherd, selectEffect, attachEffect } from './engine/effects';
 import { endClientTurn, endServerTurn, startTurn, addCardFromReserve, removeCard, moveAppToCompute } from './engine/turns';
 
 export type GameAction =
@@ -9,8 +9,11 @@ export type GameAction =
   | { type: 'ASSIGN_APPS'; assignments: Record<string, string> }
   | { type: 'FINALIZE_BUILD' }
   | { type: 'PLAY_REQUEST'; requestType: RequestType }
-  | { type: 'PLAY_EFFECT'; effectType: EffectType; targets?: string[] }
+  | { type: 'PLAY_STAMPEDING_HERD' }
+  | { type: 'SELECT_EFFECT'; effectType: EffectType }
+  | { type: 'ATTACH_EFFECT'; requestType: RequestType }
   | { type: 'ROUTE_TO_COMPUTE'; computeInstanceId: string }
+  | { type: 'ROUTE_TO_STORAGE'; storageInstanceId: string }
   | { type: 'ADVANCE_ROUTING' }
   | { type: 'START_TURN' }
   | { type: 'END_CLIENT_TURN' }
@@ -34,11 +37,20 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
     case 'PLAY_REQUEST':
       return createRoutingContext(state, action.requestType);
 
-    case 'PLAY_EFFECT':
-      return playEffect(state, action.effectType, action.targets);
+    case 'PLAY_STAMPEDING_HERD':
+      return playStampedingherd(state);
+
+    case 'SELECT_EFFECT':
+      return selectEffect(state, action.effectType);
+
+    case 'ATTACH_EFFECT':
+      return attachEffect(state, action.requestType);
 
     case 'ROUTE_TO_COMPUTE':
       return routeToCompute(state, action.computeInstanceId);
+
+    case 'ROUTE_TO_STORAGE':
+      return routeToStorage(state, action.storageInstanceId);
 
     case 'ADVANCE_ROUTING':
       return advanceRouting(state);
