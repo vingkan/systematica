@@ -1,0 +1,90 @@
+:root {
+  /* Background & Surface */
+  --bg-deep: #0d1117;
+  --bg-blueprint: #131a2b;
+  --bg-surface: #1a2332;
+  --bg-elevated: #212d3f;
+  --grid-line: rgba(74, 158, 206, 0.06);
+  --grid-line-major: rgba(74, 158, 206, 0.12);
+
+  /* Card Type Colors */
+  --network: #4a9ece;
+  --network-bg: rgba(74, 158, 206, 0.12);
+  --network-border: rgba(74, 158, 206, 0.4);
+  --compute: #3daa6f;
+  --compute-bg: rgba(61, 170, 111, 0.12);
+  --compute-border: rgba(61, 170, 111, 0.4);
+  --storage: #c4915e;
+  --storage-bg: rgba(196, 145, 94, 0.12);
+  --storage-border: rgba(196, 145, 94, 0.4);
+  --application: #d4a834;
+  --application-bg: rgba(212, 168, 52, 0.12);
+  --application-border: rgba(212, 168, 52, 0.4);
+  --request: #e05555;
+  --request-bg: rgba(224, 85, 85, 0.12);
+  --request-border: rgba(224, 85, 85, 0.4);
+  --effect: #9b6dcc;
+  --effect-bg: rgba(155, 109, 204, 0.12);
+  --effect-border: rgba(155, 109, 204, 0.4);
+
+  /* Text */
+  --text-primary: #e8e6e3;
+  --text-secondary: #9aa5b4;
+  --text-muted: #5a6a7e;
+
+  /* Semantic */
+  --danger: #e74c3c;
+  --success: #27ae60;
+  --warning: #d4a834;
+  --info: #4a9ece;
+
+  /* Spacing */
+  --sp-2xs: 2px;
+  --sp-xs: 4px;
+  --sp-sm: 8px;
+  --sp-md: 16px;
+  --sp-lg: 24px;
+  --sp-xl: 32px;
+  --sp-2xl: 48px;
+  --sp-3xl: 64px;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-micro: 80ms;
+  --dur-short: 180ms;
+  --dur-medium: 300ms;
+  --dur-long: 500ms;
+
+  /* Border radius */
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+  --radius-xl: 8px;
+}
+
+/* Global reset + blueprint background */
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'DM Sans', sans-serif;
+  background: var(--bg-deep);
+  color: var(--text-primary);
+  line-height: 1.6;
+  min-height: 100vh;
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(var(--grid-line-major) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line-major) 1px, transparent 1px);
+  background-size: 16px 16px, 16px 16px, 128px 128px, 128px 128px;
+}
+
+#root {
+  min-height: 100vh;
+}

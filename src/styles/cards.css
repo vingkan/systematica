@@ -1,0 +1,135 @@
+/* Card component styling - Blueprint aesthetic */
+.game-card {
+  position: relative;
+  border-radius: var(--radius-lg);
+  padding: var(--sp-sm) 10px;
+  display: flex;
+  flex-direction: column;
+  transition: transform var(--dur-short) var(--ease-out),
+              box-shadow var(--dur-short) var(--ease-out);
+  cursor: pointer;
+  user-select: none;
+}
+
+.game-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+.game-card.selected {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 2px;
+}
+
+.game-card.disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+/* Blueprint corner marks */
+.game-card::before,
+.game-card::after {
+  content: '';
+  position: absolute;
+  width: 8px;
+  height: 8px;
+}
+.game-card::before {
+  top: 3px;
+  left: 3px;
+  border-top: 1px solid var(--card-accent);
+  border-left: 1px solid var(--card-accent);
+}
+.game-card::after {
+  bottom: 3px;
+  right: 3px;
+  border-bottom: 1px solid var(--card-accent);
+  border-right: 1px solid var(--card-accent);
+}
+
+/* Card type variants */
+.game-card.network   { background: var(--network-bg);     border: 1px solid var(--network-border);     --card-accent: var(--network); }
+.game-card.compute   { background: var(--compute-bg);     border: 1px solid var(--compute-border);     --card-accent: var(--compute); }
+.game-card.storage   { background: var(--storage-bg);     border: 1px solid var(--storage-border);     --card-accent: var(--storage); }
+.game-card.application { background: var(--application-bg); border: 1px solid var(--application-border); --card-accent: var(--application); }
+.game-card.request   { background: var(--request-bg);     border: 1px solid var(--request-border);     --card-accent: var(--request); }
+.game-card.effect    { background: var(--effect-bg);      border: 1px solid var(--effect-border);      --card-accent: var(--effect); }
+
+/* Card inner elements */
+.card-type-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--card-accent);
+}
+.card-name {
+  font-family: 'Satoshi', sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--text-primary);
+  margin-top: var(--sp-2xs);
+}
+.card-stats {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-top: auto;
+}
+.card-capacity {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--card-accent);
+}
+
+/* Full-size card (in hand or standalone) */
+.game-card.card-full {
+  width: 140px;
+  height: 196px;
+}
+
+/* Mini card (on board architecture) */
+.game-card.card-arch {
+  width: 150px;
+  min-height: 72px;
+  height: auto;
+  padding: var(--sp-sm) var(--sp-sm);
+}
+.game-card.card-arch .card-name {
+  font-size: 12px;
+}
+.game-card.card-arch .card-stats {
+  font-size: 10px;
+  white-space: pre-line;
+}
+
+/* Request token (played indicator) */
+.request-token {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+}
+.request-token.request { background: var(--request-bg); border: 1px solid var(--request-border); color: var(--request); }
+.request-token.effect  { background: var(--effect-bg);  border: 1px solid var(--effect-border);  color: var(--effect); }
+
+/* Overloaded state */
+.game-card.overloaded {
+  border-color: var(--danger) !important;
+  animation: overload-pulse 1.5s ease-in-out infinite;
+}
+.game-card.overloaded .card-capacity { color: var(--danger); }
+
+@keyframes overload-pulse {
+  0%, 100% { box-shadow: 0 0 8px rgba(231, 76, 60, 0.2); }
+  50% { box-shadow: 0 0 20px rgba(231, 76, 60, 0.5); }
+}
