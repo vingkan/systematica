@@ -25,7 +25,7 @@ export function TurnControls({ state, dispatch }: TurnControlsProps) {
     <div className="turn-controls">
       <span className="active-player-label">
         {isServer
-          ? '// server turn: add, remove, or move 1 card, then end turn'
+          ? `// server turn: ${state.turnState.serverEnergy}E remaining | add (2E), remove (1E), move app (free)`
           : `// client turn: play up to ${state.turnState.cardLimit} cards`}
       </span>
       <button className="btn primary" onClick={handleEndTurn}>

@@ -1,6 +1,6 @@
 import type { GameState, TurnState } from '../types';
-import { TURN_CARD_LIMITS } from '../types';
-import { getCardDef, INITIAL_CLIENT_DECK } from '../cards';
+import { TURN_CARD_LIMITS, INITIAL_SERVER_ENERGY, ENERGY_COST_ADD, ENERGY_COST_REMOVE } from '../types';
+import { getCardDef } from '../cards';
 import { resolveCarryOver } from './routing';
 
 export function createInitialTurnState(cardLimit: number): TurnState {
@@ -10,13 +10,23 @@ export function createInitialTurnState(cardLimit: number): TurnState {
     storageOps: {},
     lbThroughputUsed: 0,
     roundRobinIndex: 0,
-    serverActionsUsed: 0,
+    serverEnergy: INITIAL_SERVER_ENERGY,
   };
 }
 
 export function startTurn(state: GameState): GameState {
-  // Resolve carry-over (AT_PAYMENT auto-completes, WAITING_AT_LB re-routes or times out)
-  let newState = resolveCarryOver(state);
+  // Clear per-turn modifiers from previous turn
+  const board = state.board.map(c => {
+    const cleared = { ...c };
+    if (cleared.disabledUntilTurn != null && cleared.disabledUntilTurn <= state.currentTurn) {
+      delete cleared.disabledUntilTurn;
+    }
+    delete cleared.capacityModifier;
+    return cleared;
+  });
+
+  // Resolve carry-over (WAITING_AT_LB re-routes or times out)
+  let newState = resolveCarryOver({ ...state, board });
 
   // If resolveCarryOver created a routingContext (for WAITING_AT_LB re-routing),
   // stay in client mode so the player can route the queued request.
@@ -29,12 +39,15 @@ export function startTurn(state: GameState): GameState {
 }
 
 export function endClientTurn(state: GameState): GameState {
-  const nextTurn = state.currentTurn + 1;
+  // Clean up ephemeral cards before advancing
+  const cleaned = cleanupEphemeralCards(state);
+
+  const nextTurn = cleaned.currentTurn + 1;
 
   if (nextTurn > 3) {
     // Game over
     return {
-      ...state,
+      ...cleaned,
       phase: 'game-over',
       currentTurn: nextTurn,
       activePlayer: 'server',
@@ -42,39 +55,70 @@ export function endClientTurn(state: GameState): GameState {
     };
   }
 
-  const cardLimit = TURN_CARD_LIMITS[nextTurn] || 5;
+  const cardLimit = TURN_CARD_LIMITS[nextTurn] || 4;
 
   return {
-    ...state,
+    ...cleaned,
     currentTurn: nextTurn,
     activePlayer: 'server',
     routingContext: null,
-    clientDeck: INITIAL_CLIENT_DECK.map(e => ({ ...e })),
-    effectAttachments: [],
-    selectedEffect: null,
     turnState: {
       ...createInitialTurnState(cardLimit),
-      roundRobinIndex: state.turnState.roundRobinIndex,
+      roundRobinIndex: cleaned.turnState.roundRobinIndex,
     },
   };
 }
 
-export function endServerTurn(state: GameState): GameState {
-  const cardLimit = TURN_CARD_LIMITS[state.currentTurn] || 5;
+function cleanupEphemeralCards(state: GameState): GameState {
+  const ephemeralCards = state.board.filter(c => c.ephemeral);
+  if (ephemeralCards.length === 0) return state;
 
+  const ephemeralIds = new Set(ephemeralCards.map(c => c.instanceId));
+
+  // Bounce active requests on ephemeral cards to lb-queue
+  const requests = state.requests.map(r => {
+    if (r.status === 'active' && ephemeralIds.has(r.location)) {
+      return { ...r, location: 'lb-queue', waitingSince: state.currentTurn };
+    }
+    return r;
+  });
+
+  // Remove ephemeral cards and clean up connections
+  const board = state.board
+    .filter(c => !c.ephemeral)
+    .map(c => ({
+      ...c,
+      connections: c.connections.filter(conn => !ephemeralIds.has(conn)),
+    }));
+
+  // Return ephemeral card IDs to reserve
+  const returnedCardIds = ephemeralCards.map(c => c.cardId);
+
+  return {
+    ...state,
+    board,
+    requests,
+    reserve: [...state.reserve, ...returnedCardIds],
+  };
+}
+
+export function endServerTurn(state: GameState): GameState {
   return {
     ...state,
     activePlayer: 'client',
     turnState: {
-      ...createInitialTurnState(cardLimit),
-      roundRobinIndex: state.turnState.roundRobinIndex,
+      ...state.turnState,
+      cardsPlayedThisTurn: 0,
+      storageOps: {},
+      lbThroughputUsed: 0,
+      // serverEnergy and roundRobinIndex preserved
     },
   };
 }
 
 export function addCardFromReserve(state: GameState, cardId: string): GameState {
   if (state.activePlayer !== 'server') return state;
-  if (state.turnState.serverActionsUsed >= 1) return state;
+  if (state.turnState.serverEnergy < ENERGY_COST_ADD) return state;
 
   const reserveIdx = state.reserve.indexOf(cardId);
   if (reserveIdx === -1) return state;
@@ -99,7 +143,7 @@ export function addCardFromReserve(state: GameState, cardId: string): GameState 
         ...state,
         board: updatedBoard,
         reserve: newReserve,
-        turnState: { ...state.turnState, serverActionsUsed: 1 },
+        turnState: { ...state.turnState, serverEnergy: state.turnState.serverEnergy - ENERGY_COST_ADD },
       };
     }
   }
@@ -108,13 +152,13 @@ export function addCardFromReserve(state: GameState, cardId: string): GameState 
     ...state,
     board: newBoard,
     reserve: newReserve,
-    turnState: { ...state.turnState, serverActionsUsed: 1 },
+    turnState: { ...state.turnState, serverEnergy: state.turnState.serverEnergy - ENERGY_COST_ADD },
   };
 }
 
 export function removeCard(state: GameState, instanceId: string): GameState {
   if (state.activePlayer !== 'server') return state;
-  if (state.turnState.serverActionsUsed >= 1) return state;
+  if (state.turnState.serverEnergy < ENERGY_COST_REMOVE) return state;
 
   const card = state.board.find(c => c.instanceId === instanceId);
   if (!card) return state;
@@ -141,7 +185,7 @@ export function removeCard(state: GameState, instanceId: string): GameState {
     board: newBoard,
     reserve: newReserve,
     requests,
-    turnState: { ...state.turnState, serverActionsUsed: 1 },
+    turnState: { ...state.turnState, serverEnergy: state.turnState.serverEnergy - ENERGY_COST_REMOVE },
   };
 }
 

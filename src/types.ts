@@ -1,17 +1,19 @@
 export type GamePhase = 'build' | 'play' | 'game-over';
 export type BuildStep = 'lb' | 'compute' | 'cache' | 'app-assignment' | 'done';
-export type CardType = 'network' | 'compute' | 'storage' | 'application';
+export type CardType = 'network' | 'compute' | 'storage' | 'application' | 'service';
 export type RequestType = 'view-event' | 'hold-ticket' | 'purchase-ticket';
 export type EffectType = 'stampeding-herd' | 'race-condition' | 'payment-error';
+export type InterruptType = 'HOT_SWAP' | 'AUTO_SCALE' | 'RATE_LIMIT' | 'CIRCUIT_BREAKER';
 export type ActivePlayer = 'server' | 'client';
 
 export type RoutingState =
+  | 'AWAITING_SERVER_REACTION'
   | 'AT_LB'
   | 'WAITING_AT_LB'
   | 'AT_COMPUTE'
   | 'AT_APP'
   | 'AT_STORAGE'
-  | 'AT_PAYMENT'
+  | 'AT_SERVICE'
   | 'COMPLETED'
   | 'FAILED';
 
@@ -50,6 +52,9 @@ export interface PlacedCard {
   instanceId: string;
   cardId: string;
   connections: string[]; // instanceIds of downstream cards
+  ephemeral?: boolean;
+  disabledUntilTurn?: number;
+  capacityModifier?: number;
 }
 
 export interface ActiveRequest {
@@ -68,7 +73,7 @@ export interface TurnState {
   storageOps: Record<string, { reads: number; writes: number }>;
   lbThroughputUsed: number;
   roundRobinIndex: number;
-  serverActionsUsed: number;
+  serverEnergy: number;
 }
 
 export interface BuildChoices {
@@ -108,6 +113,10 @@ export interface GameState {
 
 export const REQUEST_TIMEOUT_TURNS = 2;
 export const LB_THROUGHPUT_PER_TURN = 20;
+export const INITIAL_SERVER_ENERGY = 3;
+export const ENERGY_COST_ADD = 2;
+export const ENERGY_COST_REMOVE = 1;
+export const ENERGY_COST_INTERRUPT = 1;
 
 export const REQUEST_POINTS: Record<RequestType, number> = {
   'view-event': 0,
@@ -116,8 +125,8 @@ export const REQUEST_POINTS: Record<RequestType, number> = {
 };
 
 export const TURN_CARD_LIMITS: Record<number, number> = {
-  1: 5,
-  2: 5,
+  1: 4,
+  2: 6,
   3: 10,
 };
 

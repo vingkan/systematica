@@ -16,6 +16,7 @@ export function ServerArchitecture({ state, dispatch }: ServerArchitectureProps)
   const networkCards = state.board.filter(c => getCardDef(c.cardId).type === 'network');
   const computeCards = state.board.filter(c => getCardDef(c.cardId).type === 'compute');
   const storageCards = state.board.filter(c => getCardDef(c.cardId).type === 'storage');
+  const serviceCards = state.board.filter(c => getCardDef(c.cardId).type === 'service');
   const appCards = state.board.filter(c => getCardDef(c.cardId).type === 'application');
 
   const requestsOnCard = (instanceId: string) =>
@@ -69,7 +70,7 @@ export function ServerArchitecture({ state, dispatch }: ServerArchitectureProps)
   };
 
   const handleRemoveCard = (instanceId: string) => {
-    if (!isServerTurn || state.turnState.serverActionsUsed >= 1) return;
+    if (!isServerTurn || state.turnState.serverEnergy < 1) return;
     const card = state.board.find(c => c.instanceId === instanceId);
     if (card) {
       dispatch({ type: 'REMOVE_CARD', instanceId });
@@ -118,8 +119,12 @@ export function ServerArchitecture({ state, dispatch }: ServerArchitectureProps)
       <div className="arch-layer" style={{ gap: 'var(--sp-md)' }}>
         {computeCards.map(c => {
           const def = getCardDef(c.cardId);
+          const effectiveCapacity = c.capacityModifier ?? def.capacity;
           const load = requestsOnCard(c.instanceId);
-          const isOverloaded = def.capacity !== undefined && load >= def.capacity;
+          const isOverloaded = effectiveCapacity !== undefined && load >= effectiveCapacity;
+          const isDisabled = c.disabledUntilTurn != null && c.disabledUntilTurn >= state.currentTurn;
+          const isEphemeral = c.ephemeral === true;
+          const isRateLimited = c.capacityModifier != null;
           const apps = getAppsOnCompute(c.instanceId);
           const isValidTarget = routingCtx?.validTargets.includes(c.instanceId) ?? false;
           const isRecommended = routingCtx?.lbRecommendation === c.instanceId;
@@ -145,14 +150,14 @@ export function ServerArchitecture({ state, dispatch }: ServerArchitectureProps)
               <Card
                 cardId={c.cardId}
                 size="arch"
-                overloaded={isOverloaded}
+                overloaded={isOverloaded || isDisabled}
                 highlighted={isValidTarget}
                 recommended={isRecommended}
                 active={hasActiveRequest}
-                highlightLabel={isValidTarget ? (isRecommended ? 'LB recommends' : 'click to route') : undefined}
-                badge={`${load}/${def.capacity}`}
-                stats={`${def.appSlots} slots | ${load} active`}
-                onClick={() => isClickable ? handleComputeClick(c.instanceId) : undefined}
+                highlightLabel={isDisabled ? 'DISABLED' : isValidTarget ? (isRecommended ? 'LB recommends' : 'click to route') : undefined}
+                badge={isDisabled ? 'OFF' : `${load}/${effectiveCapacity}`}
+                stats={`${def.appSlots} slots | ${load} active${isEphemeral ? ' | ephemeral' : ''}${isRateLimited ? ' | rate-limited' : ''}`}
+                onClick={() => isClickable && !isDisabled ? handleComputeClick(c.instanceId) : undefined}
               />
               {/* Apps as compact row */}
               <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
@@ -172,7 +177,7 @@ export function ServerArchitecture({ state, dispatch }: ServerArchitectureProps)
                 )}
               </div>
               {/* Remove button */}
-              {isServerTurn && state.turnState.serverActionsUsed < 1 && (
+              {isServerTurn && state.turnState.serverEnergy >= 1 && (
                 <button
                   onClick={(e) => { e.stopPropagation(); handleRemoveCard(c.instanceId); }}
                   style={{
@@ -257,7 +262,7 @@ export function ServerArchitecture({ state, dispatch }: ServerArchitectureProps)
       )}
 
       {/* Reserve pool */}
-      {isServerTurn && state.reserve.length > 0 && state.turnState.serverActionsUsed < 1 && (
+      {isServerTurn && state.reserve.length > 0 && state.turnState.serverEnergy >= 2 && (
         <div style={{ marginTop: 'var(--sp-sm)', paddingTop: 'var(--sp-sm)', borderTop: '1px dashed var(--grid-line-major)' }}>
           <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: 'var(--text-muted)', letterSpacing: 1, textTransform: 'uppercase' }}>
             reserve
@@ -275,6 +280,37 @@ export function ServerArchitecture({ state, dispatch }: ServerArchitectureProps)
             ))}
           </div>
         </div>
+      )}
+
+      {/* Service layer */}
+      {serviceCards.length > 0 && (
+        <>
+          <Connector count={serviceCards.length} />
+          <div className="arch-layer">
+            {serviceCards.map(c => {
+              const def = getCardDef(c.cardId);
+              const isServiceTarget = routingCtx?.state === 'AT_SERVICE' && routingCtx.validTargets.includes(c.instanceId);
+
+              const handleServiceClick = () => {
+                if (isServiceTarget) {
+                  dispatch({ type: 'ROUTE_TO_SERVICE', serviceInstanceId: c.instanceId });
+                }
+              };
+
+              return (
+                <Card
+                  key={c.instanceId}
+                  cardId={c.cardId}
+                  size="arch"
+                  highlighted={isServiceTarget}
+                  highlightLabel={isServiceTarget ? 'click to process payment' : undefined}
+                  stats={`${def.name} | cost: ${def.cost}`}
+                  onClick={handleServiceClick}
+                />
+              );
+            })}
+          </div>
+        </>
       )}
 
       {/* Queue status */}

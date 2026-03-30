@@ -8,7 +8,7 @@ export const CARD_DEFINITIONS: Record<string, CardDefinition> = {
     name: 'Round Robin LB',
     type: 'network',
     throughputPerTurn: 20,
-    cost: 2,
+    cost: 3,
     lbAlgorithm: 'round-robin',
   },
   'least-connections-lb': {
@@ -16,7 +16,7 @@ export const CARD_DEFINITIONS: Record<string, CardDefinition> = {
     name: 'Least Connections LB',
     type: 'network',
     throughputPerTurn: 20,
-    cost: 2,
+    cost: 3,
     lbAlgorithm: 'least-connections',
   },
   'cloud-function': {
@@ -33,7 +33,7 @@ export const CARD_DEFINITIONS: Record<string, CardDefinition> = {
     type: 'compute',
     capacity: 8,
     appSlots: 4,
-    cost: 3,
+    cost: 4,
   },
   'relational-db': {
     id: 'relational-db',
@@ -41,7 +41,7 @@ export const CARD_DEFINITIONS: Record<string, CardDefinition> = {
     type: 'storage',
     readsPerTurn: 5,
     writesPerTurn: 3,
-    cost: 2,
+    cost: 3,
   },
   'kv-store': {
     id: 'kv-store',
@@ -49,7 +49,7 @@ export const CARD_DEFINITIONS: Record<string, CardDefinition> = {
     type: 'storage',
     readsPerTurn: 10,
     writesPerTurn: 10,
-    cost: 1,
+    cost: 2,
   },
   'read-event': {
     id: 'read-event',
@@ -72,8 +72,8 @@ export const CARD_DEFINITIONS: Record<string, CardDefinition> = {
   'payment-service': {
     id: 'payment-service',
     name: 'Payment Service',
-    type: 'application',
-    cost: 0,
+    type: 'service',
+    cost: 1,
   },
 };
 
@@ -86,16 +86,19 @@ export function getCardDef(cardId: string): CardDefinition {
 // === CLIENT DECK (Ticket Booking Scenario) ===
 
 export const INITIAL_CLIENT_DECK: ClientDeckEntry[] = [
-  { type: 'view-event', remaining: 8 },
-  { type: 'hold-ticket', remaining: 8 },
-  { type: 'purchase-ticket', remaining: 6 },
+  { type: 'view-event', remaining: 6 },
+  { type: 'hold-ticket', remaining: 6 },
+  { type: 'purchase-ticket', remaining: 4 },
   { type: 'stampeding-herd', remaining: 2 },
   { type: 'race-condition', remaining: 2 },
   { type: 'payment-error', remaining: 2 },
 ];
 
 // Application cards that are always placed regardless of build choices
-export const ALWAYS_PLACED_APPS = ['read-event', 'write-ticket-hold', 'write-purchase', 'payment-service'];
+export const ALWAYS_PLACED_APPS = ['read-event', 'write-ticket-hold', 'write-purchase'];
+
+// Service cards that are always placed (third-party dependencies)
+export const ALWAYS_PLACED_SERVICES = ['payment-service'];
 
 // Storage operation type for each request
 export const REQUEST_STORAGE_OP: Record<string, 'read' | 'write'> = {

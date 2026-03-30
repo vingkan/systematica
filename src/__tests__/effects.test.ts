@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { GameState } from '../types';
 import { createInitialGameState, finalizeBuild, makeBuildChoice, assignAppToCompute, resetInstanceCounter } from '../engine/build';
-import { createRoutingContext, routeToCompute, routeToStorage, advanceRouting, resetRequestIdCounter } from '../engine/routing';
+import { createRoutingContext, routeToCompute, routeToStorage, routeToService, advanceRouting, serverPassReaction, resetRequestIdCounter } from '../engine/routing';
 import { playStampedingherd, selectEffect, attachEffect } from '../engine/effects';
 import { endServerTurn } from '../engine/turns';
 
@@ -20,18 +20,20 @@ function buildGameState(): GameState {
 
 function playAndResolve(state: GameState, type: 'view-event' | 'hold-ticket' | 'purchase-ticket'): GameState {
   let s = createRoutingContext(state, type);
+  // Pass server reaction if needed
+  if (s.routingContext?.state === 'AWAITING_SERVER_REACTION') {
+    s = serverPassReaction(s);
+  }
   if (s.routingContext?.state === 'AT_LB' && s.routingContext.validTargets.length > 0) {
     s = routeToCompute(s, s.routingContext.validTargets[0]);
-    // AT_APP is now interactive - route to storage
     if (s.routingContext?.state === 'AT_APP' && s.routingContext.validTargets.length > 0) {
       s = routeToStorage(s, s.routingContext.validTargets[0]);
     }
-    // Clear terminal states
-    if (s.routingContext && ['COMPLETED', 'FAILED'].includes(s.routingContext.state)) {
-      s = advanceRouting(s);
+    // Handle AT_SERVICE for purchase tickets
+    if (s.routingContext?.state === 'AT_SERVICE' && s.routingContext.validTargets.length > 0) {
+      s = routeToService(s, s.routingContext.validTargets[0]);
     }
-    // Park AT_PAYMENT
-    if (s.routingContext?.state === 'AT_PAYMENT') {
+    if (s.routingContext && ['COMPLETED', 'FAILED'].includes(s.routingContext.state)) {
       s = advanceRouting(s);
     }
   }
@@ -82,7 +84,10 @@ describe('Effect Attachment: Race Condition', () => {
     state = createRoutingContext(state, 'hold-ticket');
     expect(state.requests.some(r => r.effectAttached === 'race-condition')).toBe(true);
 
-    // Route through system
+    // Route through system (pass reaction first)
+    if (state.routingContext?.state === 'AWAITING_SERVER_REACTION') {
+      state = serverPassReaction(state);
+    }
     if (state.routingContext?.state === 'AT_LB') {
       state = routeToCompute(state, state.routingContext.validTargets[0]);
       if (state.routingContext?.state === 'AT_APP') {

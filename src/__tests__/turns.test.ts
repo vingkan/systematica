@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import type { GameState } from '../types';
+import { INITIAL_SERVER_ENERGY, ENERGY_COST_ADD, ENERGY_COST_REMOVE } from '../types';
 import { createInitialGameState, finalizeBuild, makeBuildChoice, assignAppToCompute, resetInstanceCounter } from '../engine/build';
-import { endClientTurn, endServerTurn, startTurn, moveAppToCompute } from '../engine/turns';
+import { endClientTurn, endServerTurn, startTurn, addCardFromReserve, removeCard, moveAppToCompute } from '../engine/turns';
 import { resetRequestIdCounter } from '../engine/routing';
 import { getCardDef } from '../cards';
 
@@ -17,6 +18,58 @@ function buildGameState(): GameState {
   return state;
 }
 
+describe('energy system', () => {
+  it('initializes with correct server energy', () => {
+    const state = buildGameState();
+    expect(state.turnState.serverEnergy).toBe(INITIAL_SERVER_ENERGY);
+  });
+
+  it('addCardFromReserve costs 2 energy', () => {
+    let state = buildGameState();
+    expect(state.reserve.length).toBeGreaterThan(0);
+    const cardId = state.reserve[0];
+    const result = addCardFromReserve(state, cardId);
+    expect(result.turnState.serverEnergy).toBe(INITIAL_SERVER_ENERGY - ENERGY_COST_ADD);
+  });
+
+  it('rejects addCardFromReserve when energy < 2', () => {
+    let state = buildGameState();
+    state = { ...state, turnState: { ...state.turnState, serverEnergy: 1 } };
+    const cardId = state.reserve[0];
+    const result = addCardFromReserve(state, cardId);
+    expect(result.turnState.serverEnergy).toBe(1); // Unchanged
+  });
+
+  it('removeCard costs 1 energy', () => {
+    let state = buildGameState();
+    const computeCard = state.board.find(c => getCardDef(c.cardId).type === 'compute');
+    if (computeCard) {
+      const result = removeCard(state, computeCard.instanceId);
+      expect(result.turnState.serverEnergy).toBe(INITIAL_SERVER_ENERGY - ENERGY_COST_REMOVE);
+    }
+  });
+
+  it('rejects removeCard when energy < 1', () => {
+    let state = buildGameState();
+    state = { ...state, turnState: { ...state.turnState, serverEnergy: 0 } };
+    const computeCard = state.board.find(c => getCardDef(c.cardId).type === 'compute');
+    if (computeCard) {
+      const result = removeCard(state, computeCard.instanceId);
+      expect(result.turnState.serverEnergy).toBe(0);
+    }
+  });
+
+  it('allows multiple actions with enough energy', () => {
+    let state = buildGameState();
+    // Remove costs 1, should be able to do it 3 times with 3 energy
+    const computeCards = state.board.filter(c => getCardDef(c.cardId).type === 'compute');
+    if (computeCards.length > 0) {
+      state = removeCard(state, computeCards[0].instanceId);
+      expect(state.turnState.serverEnergy).toBe(INITIAL_SERVER_ENERGY - 1);
+    }
+  });
+});
+
 describe('endClientTurn', () => {
   it('advances from turn 1 to turn 2', () => {
     let state = buildGameState();
@@ -24,7 +77,7 @@ describe('endClientTurn', () => {
     const result = endClientTurn(state);
     expect(result.currentTurn).toBe(2);
     expect(result.activePlayer).toBe('server');
-    expect(result.turnState.cardLimit).toBe(5); // Turn 2 limit
+    expect(result.turnState.cardLimit).toBe(6); // Turn 2 limit (changed from 5)
   });
 
   it('advances from turn 2 to turn 3', () => {
@@ -64,6 +117,20 @@ describe('endClientTurn', () => {
     const result = endClientTurn(state);
     expect(result.turnState.roundRobinIndex).toBe(3);
   });
+
+  it('does NOT reset client deck between turns', () => {
+    let state = buildGameState();
+    state = endServerTurn(state);
+    // Simulate playing some cards
+    const deck = state.clientDeck.map(e => ({ ...e }));
+    const viewEntry = deck.find(e => e.type === 'view-event');
+    if (viewEntry) viewEntry.remaining = 2; // Simulated plays
+    state = { ...state, clientDeck: deck };
+
+    const result = endClientTurn(state);
+    const viewAfter = result.clientDeck.find(e => e.type === 'view-event');
+    expect(viewAfter!.remaining).toBe(2); // NOT reset to 6
+  });
 });
 
 describe('endServerTurn', () => {
@@ -73,12 +140,79 @@ describe('endServerTurn', () => {
     expect(result.activePlayer).toBe('client');
   });
 
-  it('resets turn state', () => {
+  it('preserves serverEnergy across server→client transition', () => {
     let state = buildGameState();
-    state = { ...state, turnState: { ...state.turnState, serverActionsUsed: 1, cardsPlayedThisTurn: 5 } };
+    // Spend some energy
+    state = { ...state, turnState: { ...state.turnState, serverEnergy: 2 } };
     const result = endServerTurn(state);
-    expect(result.turnState.serverActionsUsed).toBe(0);
+    expect(result.turnState.serverEnergy).toBe(2); // Preserved for interrupts
+  });
+
+  it('resets client-relevant fields', () => {
+    let state = buildGameState();
+    state = { ...state, turnState: { ...state.turnState, cardsPlayedThisTurn: 5, lbThroughputUsed: 10 } };
+    const result = endServerTurn(state);
     expect(result.turnState.cardsPlayedThisTurn).toBe(0);
+    expect(result.turnState.lbThroughputUsed).toBe(0);
+  });
+});
+
+describe('ephemeral cleanup', () => {
+  it('removes ephemeral cards at end of client turn', () => {
+    let state = buildGameState();
+    state = endServerTurn(state);
+    // Add an ephemeral card
+    const ephemeral = { instanceId: 'cf-ephemeral-1', cardId: 'cloud-function', connections: [] as string[], ephemeral: true };
+    state = { ...state, board: [...state.board, ephemeral] };
+
+    const result = endClientTurn(state);
+    expect(result.board.find(c => c.instanceId === 'cf-ephemeral-1')).toBeUndefined();
+  });
+
+  it('returns ephemeral card IDs to reserve', () => {
+    let state = buildGameState();
+    state = endServerTurn(state);
+    const reserveBefore = state.reserve.length;
+    const ephemeral = { instanceId: 'cf-ephemeral-1', cardId: 'cloud-function', connections: [] as string[], ephemeral: true };
+    state = { ...state, board: [...state.board, ephemeral] };
+
+    const result = endClientTurn(state);
+    expect(result.reserve.length).toBe(reserveBefore + 1);
+    expect(result.reserve).toContain('cloud-function');
+  });
+
+  it('bounces requests on ephemeral cards to lb-queue', () => {
+    let state = buildGameState();
+    state = endServerTurn(state);
+    const ephemeral = { instanceId: 'cf-ephemeral-1', cardId: 'cloud-function', connections: [] as string[], ephemeral: true };
+    state = { ...state, board: [...state.board, ephemeral] };
+    // Place a request on the ephemeral card
+    const fakeReq = { id: 'req-fake', type: 'view-event' as const, location: 'cf-ephemeral-1', turnPlayed: 1, status: 'active' as const };
+    state = { ...state, requests: [...state.requests, fakeReq] };
+
+    const result = endClientTurn(state);
+    const bouncedReq = result.requests.find(r => r.id === 'req-fake');
+    expect(bouncedReq).toBeDefined();
+    expect(bouncedReq!.location).toBe('lb-queue');
+  });
+
+  it('cleans up LB connections to ephemeral cards', () => {
+    let state = buildGameState();
+    state = endServerTurn(state);
+    const ephemeral = { instanceId: 'cf-ephemeral-1', cardId: 'cloud-function', connections: [] as string[], ephemeral: true };
+    // Add ephemeral and connect LB to it
+    const lb = state.board.find(c => getCardDef(c.cardId).type === 'network')!;
+    state = {
+      ...state,
+      board: [
+        ...state.board.map(c => c.instanceId === lb.instanceId ? { ...c, connections: [...c.connections, 'cf-ephemeral-1'] } : c),
+        ephemeral,
+      ],
+    };
+
+    const result = endClientTurn(state);
+    const lbAfter = result.board.find(c => getCardDef(c.cardId).type === 'network')!;
+    expect(lbAfter.connections).not.toContain('cf-ephemeral-1');
   });
 });
 
@@ -89,10 +223,45 @@ describe('startTurn', () => {
     expect(result.routingContext).toBeNull();
     expect(result.activePlayer).toBe('server');
   });
+
+  it('clears disabledUntilTurn at start of turn', () => {
+    let state = buildGameState();
+    // Disable a compute card until current turn
+    const computeCard = state.board.find(c => getCardDef(c.cardId).type === 'compute')!;
+    state = {
+      ...state,
+      board: state.board.map(c =>
+        c.instanceId === computeCard.instanceId
+          ? { ...c, disabledUntilTurn: state.currentTurn }
+          : c,
+      ),
+    };
+
+    const result = startTurn(state);
+    const clearedCard = result.board.find(c => c.instanceId === computeCard.instanceId)!;
+    expect(clearedCard.disabledUntilTurn).toBeUndefined();
+  });
+
+  it('clears capacityModifier at start of turn', () => {
+    let state = buildGameState();
+    const computeCard = state.board.find(c => getCardDef(c.cardId).type === 'compute')!;
+    state = {
+      ...state,
+      board: state.board.map(c =>
+        c.instanceId === computeCard.instanceId
+          ? { ...c, capacityModifier: 4 }
+          : c,
+      ),
+    };
+
+    const result = startTurn(state);
+    const clearedCard = result.board.find(c => c.instanceId === computeCard.instanceId)!;
+    expect(clearedCard.capacityModifier).toBeUndefined();
+  });
 });
 
 describe('moveAppToCompute', () => {
-  it('does NOT cost the server action (moving apps is free)', () => {
+  it('does NOT cost energy (moving apps is free)', () => {
     let state = buildGameState();
     const secondContainer = { instanceId: 'container-extra', cardId: 'container', connections: [] as string[] };
     state = { ...state, board: [...state.board, secondContainer] };
@@ -112,30 +281,9 @@ describe('moveAppToCompute', () => {
     });
 
     if (appOnOrig) {
-      expect(state.turnState.serverActionsUsed).toBe(0);
+      const energyBefore = state.turnState.serverEnergy;
       const result = moveAppToCompute(state, appOnOrig, 'container-extra');
-      // Moving apps is free — serverActionsUsed stays 0
-      expect(result.turnState.serverActionsUsed).toBe(0);
-    }
-  });
-
-  it('works even after server action is used (add then move)', () => {
-    let state = buildGameState();
-    // Simulate having already used the action to add a card
-    state = { ...state, turnState: { ...state.turnState, serverActionsUsed: 1 } };
-    const secondContainer = { instanceId: 'container-extra', cardId: 'container', connections: [] as string[] };
-    state = { ...state, board: [...state.board, secondContainer] };
-
-    const origContainer = state.board.find(c => c.cardId === 'container' && c.instanceId !== 'container-extra');
-    const appOnOrig = origContainer?.connections.find(connId => {
-      const c = state.board.find(b => b.instanceId === connId);
-      return c && getCardDef(c.cardId).type === 'application';
-    });
-
-    if (appOnOrig) {
-      const result = moveAppToCompute(state, appOnOrig, 'container-extra');
-      // Should succeed — move is free even after add
-      expect(result.board).not.toEqual(state.board);
+      expect(result.turnState.serverEnergy).toBe(energyBefore); // Unchanged
     }
   });
 });

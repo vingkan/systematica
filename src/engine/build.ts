@@ -1,7 +1,7 @@
 import type {
   GameState, BuildStep, BuildChoices, PlacedCard,
 } from '../types';
-import { ALWAYS_PLACED_APPS, getCardDef, INITIAL_CLIENT_DECK } from '../cards';
+import { ALWAYS_PLACED_APPS, ALWAYS_PLACED_SERVICES, getCardDef, INITIAL_CLIENT_DECK } from '../cards';
 import { createInitialTurnState } from './turns';
 
 let instanceCounter = 0;
@@ -179,15 +179,24 @@ export function generateInitialBoard(choices: BuildChoices): {
     writeHoldCard.connections = [choices.cache && kvInstance ? kvInstance : rdbInstance];
   }
 
-  // Write Purchase always connects to Relational DB
+  // Service cards: always placed
+  const serviceInstances: Record<string, string> = {};
+  for (const serviceId of ALWAYS_PLACED_SERVICES) {
+    const inst = nextInstanceId(serviceId);
+    board.push({ instanceId: inst, cardId: serviceId, connections: [] });
+    serviceInstances[serviceId] = inst;
+  }
+
+  // Write Purchase connects to Relational DB + Payment Service
   const writePurchaseInst = appInstances['write-purchase'];
   const writePurchaseCard = board.find(c => c.instanceId === writePurchaseInst);
   if (writePurchaseCard) {
-    writePurchaseCard.connections = [rdbInstance];
+    const connections = [rdbInstance];
+    if (serviceInstances['payment-service']) {
+      connections.push(serviceInstances['payment-service']);
+    }
+    writePurchaseCard.connections = connections;
   }
-
-  // Payment Service has no downstream connections (self-contained)
-  // It's placed but doesn't connect to storage in the prototype
 
   return { board, reserve };
 }

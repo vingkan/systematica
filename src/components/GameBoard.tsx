@@ -5,6 +5,7 @@ import { ServerArchitecture } from './ServerArchitecture';
 import { ClientHand } from './ClientHand';
 import { TurnControls } from './TurnControls';
 import { ResolutionTracker } from './ResolutionTracker';
+import { ServerReactionPanel } from './ServerReactionPanel';
 
 interface GameBoardProps {
   state: GameState;
@@ -18,7 +19,7 @@ export function GameBoard({ state, dispatch }: GameBoardProps) {
   // Click-to-dismiss terminal states
   const handleBoardClick = () => {
     if (!ctx) return;
-    const terminalStates = ['COMPLETED', 'FAILED', 'WAITING_AT_LB', 'AT_PAYMENT'];
+    const terminalStates = ['COMPLETED', 'FAILED', 'WAITING_AT_LB'];
     if (terminalStates.includes(ctx.state)) {
       dispatch({ type: 'ADVANCE_ROUTING' });
     }
@@ -34,10 +35,14 @@ export function GameBoard({ state, dispatch }: GameBoardProps) {
         <ServerArchitecture state={state} dispatch={dispatch} />
         <div className="play-divider" />
         {isRouting && ctx ? (
-          <div className="client-side">
-            <div className="side-label">resolving request</div>
-            <ResolutionTracker routingContext={ctx} />
-          </div>
+          ctx.state === 'AWAITING_SERVER_REACTION' ? (
+            <ServerReactionPanel state={state} dispatch={dispatch} />
+          ) : (
+            <div className="client-side">
+              <div className="side-label">resolving request</div>
+              <ResolutionTracker routingContext={ctx} />
+            </div>
+          )
         ) : (
           <ClientHand state={state} dispatch={dispatch} />
         )}

@@ -32,9 +32,12 @@ export function getValidComputeTargets(state: GameState): string[] {
   );
 
   return computeCards.filter(c => {
+    // Skip disabled nodes
+    if (c.disabledUntilTurn != null && c.disabledUntilTurn >= state.currentTurn) return false;
     const def = getCardDef(c.cardId);
+    const effectiveCapacity = c.capacityModifier ?? def.capacity;
     const load = countRequestsOnCard(state.requests, c.instanceId);
-    return def.capacity != null && load < def.capacity;
+    return effectiveCapacity != null && load < effectiveCapacity;
   }).map(c => c.instanceId);
 }
 
@@ -138,20 +141,48 @@ export function createRoutingContext(
   const newTurnState = { ...turnState, lbThroughputUsed: turnState.lbThroughputUsed + 1 };
   const newState = { ...state, clientDeck: deck, effectAttachments: newAttachments, selectedEffect: null, requests, turnState: newTurnState };
 
-  const validTargets = getValidComputeTargets(newState);
-  const lbRecommendation = getLBRecommendation(newState, validTargets);
+  // If server has energy, give them a reaction window before routing
+  if (newState.turnState.serverEnergy > 0) {
+    return {
+      ...newState,
+      routingContext: {
+        requestId: request.id,
+        state: 'AWAITING_SERVER_REACTION',
+        validTargets: [],
+        lbRecommendation: null,
+        steps: [
+          { state: 'AWAITING_SERVER_REACTION', description: `${formatRequestName(requestType)}${effectLabel} — server may react...`, result: 'pending' },
+        ],
+        nudgeMessage: null,
+      },
+    };
+  }
+
+  // No energy — skip reaction, go straight to AT_LB
+  return transitionToAtLB(newState, request.id, requestType, effectLabel);
+}
+
+function transitionToAtLB(
+  state: GameState,
+  requestId: string,
+  requestType: RequestType,
+  effectLabel: string,
+): GameState {
+  const validTargets = getValidComputeTargets(state);
+  const lbRecommendation = getLBRecommendation(state, validTargets);
 
   const steps: RoutingStep[] = [
     { state: 'AT_LB', description: `${formatRequestName(requestType)}${effectLabel} arrived at Load Balancer`, result: 'pending' },
   ];
 
   if (validTargets.length === 0) {
-    const waitingRequest = { ...request, location: 'lb-queue', waitingSince: state.currentTurn };
+    const waitingRequest = state.requests.find(r => r.id === requestId);
+    if (!waitingRequest) return state;
     return {
-      ...newState,
-      requests: newState.requests.map(r => r.id === request.id ? waitingRequest : r),
+      ...state,
+      requests: state.requests.map(r => r.id === requestId ? { ...r, location: 'lb-queue', waitingSince: state.currentTurn } : r),
       routingContext: {
-        requestId: request.id,
+        requestId,
         state: 'WAITING_AT_LB',
         validTargets: [],
         lbRecommendation: null,
@@ -165,9 +196,9 @@ export function createRoutingContext(
   }
 
   return {
-    ...newState,
+    ...state,
     routingContext: {
-      requestId: request.id,
+      requestId,
       state: 'AT_LB',
       validTargets,
       lbRecommendation,
@@ -175,6 +206,17 @@ export function createRoutingContext(
       nudgeMessage: null,
     },
   };
+}
+
+export function serverPassReaction(state: GameState): GameState {
+  const ctx = state.routingContext;
+  if (!ctx || ctx.state !== 'AWAITING_SERVER_REACTION') return state;
+
+  const request = state.requests.find(r => r.id === ctx.requestId);
+  if (!request) return state;
+
+  const effectLabel = request.effectAttached ? ` (${formatEffectName(request.effectAttached)} attached)` : '';
+  return transitionToAtLB(state, ctx.requestId, request.type, effectLabel);
 }
 
 export function routeToCompute(
@@ -190,13 +232,25 @@ export function routeToCompute(
   const def = getCardDef(computeCard.cardId);
   if (def.type !== 'compute') return state;
 
-  const load = countRequestsOnCard(state.requests, computeInstanceId);
-  if (def.capacity != null && load >= def.capacity) {
+  // Check disabled
+  if (computeCard.disabledUntilTurn != null && computeCard.disabledUntilTurn >= state.currentTurn) {
     return {
       ...state,
       routingContext: {
         ...ctx,
-        nudgeMessage: `${def.name} is at capacity (${load}/${def.capacity}). Choose a node with room.`,
+        nudgeMessage: `${def.name} is disabled (Circuit Breaker). Choose another node.`,
+      },
+    };
+  }
+
+  const effectiveCapacity = computeCard.capacityModifier ?? def.capacity;
+  const load = countRequestsOnCard(state.requests, computeInstanceId);
+  if (effectiveCapacity != null && load >= effectiveCapacity) {
+    return {
+      ...state,
+      routingContext: {
+        ...ctx,
+        nudgeMessage: `${def.name} is at capacity (${load}/${effectiveCapacity}). Choose a node with room.`,
       },
     };
   }
@@ -360,25 +414,38 @@ export function routeToStorage(
     result: 'success',
   };
 
-  // Purchase Ticket -> AT_PAYMENT
+  // Purchase Ticket -> AT_SERVICE (route to payment service)
   if (request.type === 'purchase-ticket') {
-    const paymentStep: RoutingStep = {
-      state: 'AT_PAYMENT',
-      description: 'Payment processing (completes next turn)',
-      result: 'pending',
-    };
+    const serviceCards = state.board.filter(c => getCardDef(c.cardId).type === 'service');
+    const allServiceTargets = serviceCards.map(c => c.instanceId);
 
-    const effectNote = request.effectAttached === 'payment-error' ? ' | Payment Error: will earn 0 pts' : ' | +5 pts when complete';
+    if (allServiceTargets.length === 0) {
+      // No service card — fail
+      const failedRequest = { ...request, status: 'failed' as const };
+      return {
+        ...state,
+        requests: state.requests.filter(r => r.id !== request.id),
+        failedRequests: [...state.failedRequests, failedRequest],
+        turnState: newTurnState,
+        routingContext: {
+          ...ctx,
+          state: 'FAILED',
+          validTargets: [],
+          steps: [...ctx.steps, storageStep, { state: 'FAILED', description: 'FAILED: no payment service available | 0 pts', result: 'failed' }],
+          nudgeMessage: 'No Payment Service available. Purchase cannot complete.',
+        },
+      };
+    }
 
     return {
       ...state,
       turnState: newTurnState,
       routingContext: {
         ...ctx,
-        state: 'AT_PAYMENT',
-        validTargets: [],
-        steps: [...ctx.steps, storageStep, { ...paymentStep, description: paymentStep.description + effectNote }],
-        nudgeMessage: null,
+        state: 'AT_SERVICE',
+        validTargets: allServiceTargets,
+        steps: [...ctx.steps, storageStep],
+        nudgeMessage: 'Click the Payment Service to complete the purchase.',
       },
     };
   }
@@ -434,6 +501,58 @@ export function routeToStorage(
   };
 }
 
+export function routeToService(
+  state: GameState,
+  serviceInstanceId: string,
+): GameState {
+  const ctx = state.routingContext;
+  if (!ctx || ctx.state !== 'AT_SERVICE') return state;
+
+  const request = state.requests.find(r => r.id === ctx.requestId);
+  if (!request) return state;
+
+  const serviceCard = state.board.find(c => c.instanceId === serviceInstanceId);
+  if (!serviceCard) return state;
+
+  const serviceDef = getCardDef(serviceCard.cardId);
+  if (serviceDef.type !== 'service') return state;
+
+  if (!ctx.validTargets.includes(serviceInstanceId)) return state;
+
+  // Complete the request through the service
+  const completedRequest = { ...request, status: 'completed' as const };
+  const basePoints = REQUEST_POINTS[request.type];
+  const actualPoints = request.effectAttached === 'payment-error' ? 0 : basePoints;
+  const effectNote = request.effectAttached === 'payment-error' ? ' | Payment Error: 0 pts' : '';
+  const pointsDesc = actualPoints > 0 ? `+${actualPoints} pts` : '0 pts';
+
+  const serviceStep: RoutingStep = {
+    state: 'AT_SERVICE',
+    description: `Payment processed via ${serviceDef.name}`,
+    cardInstanceId: serviceInstanceId,
+    result: 'success',
+  };
+
+  const completedStep: RoutingStep = {
+    state: 'COMPLETED',
+    description: `COMPLETED | ${pointsDesc}${effectNote}`,
+    result: request.effectAttached === 'payment-error' ? 'failed' : 'success',
+  };
+
+  return {
+    ...state,
+    requests: state.requests.filter(r => r.id !== request.id),
+    completedRequests: [...state.completedRequests, completedRequest],
+    routingContext: {
+      ...ctx,
+      state: 'COMPLETED',
+      validTargets: [],
+      steps: [...ctx.steps, serviceStep, completedStep],
+      nudgeMessage: null,
+    },
+  };
+}
+
 export function advanceRouting(state: GameState): GameState {
   const ctx = state.routingContext;
   if (!ctx) return state;
@@ -443,13 +562,11 @@ export function advanceRouting(state: GameState): GameState {
     return { ...state, routingContext: null };
   }
 
-  if (ctx.state === 'AT_PAYMENT') {
-    // Park the request, clear routing context
-    return { ...state, routingContext: null };
-  }
-
-  // AT_APP and AT_STORAGE are now interactive (player picks storage)
-  // so advanceRouting shouldn't auto-advance them
+  // Interactive states — wait for player input
+  // AWAITING_SERVER_REACTION: server plays interrupts or passes
+  // AT_LB: client picks compute
+  // AT_APP: client picks storage
+  // AT_SERVICE: client picks service card
   return state;
 }
 
@@ -484,21 +601,7 @@ function failRequest(
 export function resolveCarryOver(state: GameState): GameState {
   let newState = { ...state };
 
-  // Step 1: Auto-advance AT_PAYMENT requests to COMPLETED
-  const atPayment = newState.requests.filter(r =>
-    r.status === 'active' && r.type === 'purchase-ticket' && r.turnPlayed < newState.currentTurn,
-  );
-
-  for (const req of atPayment) {
-    const completedReq = { ...req, status: 'completed' as const };
-    newState = {
-      ...newState,
-      requests: newState.requests.filter(r => r.id !== req.id),
-      completedRequests: [...newState.completedRequests, completedReq],
-    };
-  }
-
-  // Step 2: Handle WAITING_AT_LB requests
+  // Handle WAITING_AT_LB requests
   const waiting = newState.requests.filter(r =>
     r.status === 'active' && r.location === 'lb-queue' && r.waitingSince != null,
   );

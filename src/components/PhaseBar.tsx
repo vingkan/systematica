@@ -1,4 +1,5 @@
 import type { GameState } from '../types';
+import { INITIAL_SERVER_ENERGY } from '../types';
 import { computeScore } from '../engine/scoring';
 
 export function PhaseBar({ state }: { state: GameState }) {
@@ -26,6 +27,14 @@ export function PhaseBar({ state }: { state: GameState }) {
       </div>
 
       <div style={{ display: 'flex', gap: 'var(--sp-md)' }}>
+        {state.phase === 'play' && (
+          <div className="score-block">
+            <span className="score-label">Energy</span>
+            <span className="score-value" style={{ color: 'var(--info)' }}>
+              {state.turnState.serverEnergy}/{INITIAL_SERVER_ENERGY}
+            </span>
+          </div>
+        )}
         <div className="score-block">
           <span className="score-label">Score</span>
           <span className="score-value" style={{ color: score.total >= 0 ? 'var(--success)' : 'var(--danger)' }}>

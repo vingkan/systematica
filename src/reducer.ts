@@ -1,8 +1,9 @@
 import type { GameState, BuildStep, RequestType, EffectType } from './types';
 import { createInitialGameState, makeBuildChoice, assignAppToCompute, finalizeBuild } from './engine/build';
-import { createRoutingContext, routeToCompute, routeToStorage, advanceRouting } from './engine/routing';
+import { createRoutingContext, routeToCompute, routeToStorage, routeToService, advanceRouting, serverPassReaction } from './engine/routing';
 import { playStampedingherd, selectEffect, attachEffect } from './engine/effects';
 import { endClientTurn, endServerTurn, startTurn, addCardFromReserve, removeCard, moveAppToCompute } from './engine/turns';
+import { hotSwap, autoScale, rateLimit, circuitBreaker } from './engine/interrupts';
 
 export type GameAction =
   | { type: 'BUILD_CHOICE'; step: BuildStep; value: string | boolean }
@@ -14,7 +15,13 @@ export type GameAction =
   | { type: 'ATTACH_EFFECT'; requestType: RequestType }
   | { type: 'ROUTE_TO_COMPUTE'; computeInstanceId: string }
   | { type: 'ROUTE_TO_STORAGE'; storageInstanceId: string }
+  | { type: 'ROUTE_TO_SERVICE'; serviceInstanceId: string }
   | { type: 'ADVANCE_ROUTING' }
+  | { type: 'SERVER_PASS_REACTION' }
+  | { type: 'HOT_SWAP'; appInstanceId: string; targetComputeInstanceId: string }
+  | { type: 'AUTO_SCALE' }
+  | { type: 'RATE_LIMIT'; computeInstanceId: string }
+  | { type: 'CIRCUIT_BREAKER'; computeInstanceId: string }
   | { type: 'START_TURN' }
   | { type: 'END_CLIENT_TURN' }
   | { type: 'END_SERVER_TURN' }
@@ -52,8 +59,26 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
     case 'ROUTE_TO_STORAGE':
       return routeToStorage(state, action.storageInstanceId);
 
+    case 'ROUTE_TO_SERVICE':
+      return routeToService(state, action.serviceInstanceId);
+
     case 'ADVANCE_ROUTING':
       return advanceRouting(state);
+
+    case 'SERVER_PASS_REACTION':
+      return serverPassReaction(state);
+
+    case 'HOT_SWAP':
+      return hotSwap(state, action.appInstanceId, action.targetComputeInstanceId);
+
+    case 'AUTO_SCALE':
+      return autoScale(state);
+
+    case 'RATE_LIMIT':
+      return rateLimit(state, action.computeInstanceId);
+
+    case 'CIRCUIT_BREAKER':
+      return circuitBreaker(state, action.computeInstanceId);
 
     case 'START_TURN':
       return startTurn(state);
