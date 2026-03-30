@@ -1,55 +1,33 @@
-import type { GameState, ActiveRequest } from '../types';
-import { REQUEST_POINTS } from '../types';
-import { getCardDef } from '../cards';
+import type { GameState, SLAResult, Scoreboard } from './types';
+import {
+  VALUE_MULTIPLIER, SLA_VALUE_THRESHOLD,
+  SLA_UPTIME_THRESHOLD, SLA_EFFICIENCY_THRESHOLD,
+} from './types';
 
-export function computeScore(state: GameState): { earned: number; cost: number; total: number } {
-  // Group completions by turn for combo scoring
-  const byTurn: Record<number, ActiveRequest[]> = {};
-  for (const req of state.completedRequests) {
-    (byTurn[req.turnPlayed] ??= []).push(req);
-  }
+export function computeSLAs(scoreboard: Scoreboard): SLAResult {
+  const value = (scoreboard.consistency * VALUE_MULTIPLIER) - scoreboard.cost;
 
-  let earned = 0;
-  for (const reqs of Object.values(byTurn)) {
-    reqs.forEach((req, idx) => {
-      if (req.effectAttached === 'payment-error') return;
-      const base = REQUEST_POINTS[req.type] || 0;
-      // Combo: 6th+ completion in a turn earns floor(base * 1.5)
-      earned += idx >= 5 ? Math.floor(base * 1.5) : base;
-    });
-  }
+  // Handle 0 requests: uptime defaults to 100%, efficiency defaults to 0
+  const uptime = scoreboard.requests === 0 ? 1 : scoreboard.availability / scoreboard.requests;
+  const efficiency = scoreboard.requests === 0 ? 0 : scoreboard.cost / scoreboard.requests;
 
-  let cost = 0;
-  for (const card of state.board) {
-    const def = getCardDef(card.cardId);
-    cost += def.cost;
-  }
-
-  return { earned, cost, total: earned - cost };
-}
-
-export function getRequestSummary(state: GameState): {
-  completed: number;
-  failed: number;
-  active: number;
-  byType: Record<string, { completed: number; failed: number }>;
-} {
-  const byType: Record<string, { completed: number; failed: number }> = {};
-
-  const countByType = (requests: ActiveRequest[], field: 'completed' | 'failed') => {
-    for (const req of requests) {
-      if (!byType[req.type]) byType[req.type] = { completed: 0, failed: 0 };
-      byType[req.type][field]++;
-    }
-  };
-
-  countByType(state.completedRequests, 'completed');
-  countByType(state.failedRequests, 'failed');
+  const valuePass = value > SLA_VALUE_THRESHOLD;
+  const uptimePass = uptime > SLA_UPTIME_THRESHOLD;
+  const efficiencyPass = efficiency < SLA_EFFICIENCY_THRESHOLD;
 
   return {
-    completed: state.completedRequests.length,
-    failed: state.failedRequests.length,
-    active: state.requests.length,
-    byType,
+    value,
+    uptime,
+    efficiency,
+    valuePass,
+    uptimePass,
+    efficiencyPass,
+    serverWins: valuePass && uptimePass && efficiencyPass,
   };
+}
+
+export function getWinner(state: GameState): 'server' | 'client' | null {
+  if (state.phase !== 'game-over') return null;
+  const sla = computeSLAs(state.scoreboard);
+  return sla.serverWins ? 'server' : 'client';
 }

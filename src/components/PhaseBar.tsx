@@ -1,55 +1,43 @@
-import type { GameState } from '../types';
-import { INITIAL_SERVER_ENERGY } from '../types';
-import { computeScore } from '../engine/scoring';
+import type { GameState } from '../engine/types';
 
 export function PhaseBar({ state }: { state: GameState }) {
-  const score = computeScore(state);
+  const { consistency, availability, requests, cost } = state.scoreboard;
+
+  const phaseLabel =
+    state.phase === 'server-turn' ? 'Server Turn' :
+    state.phase === 'client-turn' ? 'Client Turn' :
+    state.phase === 'resolution' ? 'Resolution' :
+    'Game Over';
 
   return (
     <div className="phase-bar">
-      <div className="phase-track">
-        {[1, 2, 3].map(turn => {
-          let cls = 'phase-chip';
-          if (turn === state.currentTurn && state.phase === 'play') cls += ' active';
-          else if (turn < state.currentTurn) cls += ' completed';
-          return <div key={turn} className={cls}>Turn {turn}</div>;
-        })}
+      {/* Left: phase label */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span className="active-player-label">{phaseLabel}</span>
       </div>
 
-      <div className="active-player-label">
-        {state.phase === 'play' && (
-          <>
-            {state.activePlayer === 'server' ? 'Server' : 'Client'} Turn
-            {' '}// Turn {state.currentTurn}/3
-          </>
-        )}
-        {state.phase === 'game-over' && 'Game Over'}
-      </div>
-
-      <div style={{ display: 'flex', gap: 'var(--sp-md)' }}>
-        {state.phase === 'play' && (
-          <div className="score-block">
-            <span className="score-label">Energy</span>
-            <span className="score-value" style={{ color: 'var(--info)' }}>
-              {state.turnState.serverEnergy}/{INITIAL_SERVER_ENERGY}
-            </span>
-          </div>
-        )}
-        <div className="score-block">
-          <span className="score-label">Score</span>
-          <span className="score-value" style={{ color: score.total >= 0 ? 'var(--success)' : 'var(--danger)' }}>
-            {score.total}
-          </span>
+      {/* Center: Scoreboard */}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <div className="score-block" title="Consistency: value earned from fulfilled requests. Used in Value SLA = (Con x 20) - Cost > 50">
+          <span className="score-label">Con</span>
+          <span className="score-value" style={{ fontSize: 16, color: 'var(--info)' }}>{consistency}</span>
         </div>
-        <div className="score-block">
-          <span className="score-label">Earned</span>
-          <span className="score-value" style={{ color: 'var(--success)' }}>+{score.earned}</span>
+        <div className="score-block" title="Availability: total fulfilled request volume. Unfulfilled requests simply don't count. Used in Uptime SLA = Avl / Req > 95%">
+          <span className="score-label">Avl</span>
+          <span className="score-value" style={{ fontSize: 16, color: 'var(--success)' }}>{availability}</span>
         </div>
-        <div className="score-block">
+        <div className="score-block" title="Requests: total request volume sent through the system. Used in Uptime and Efficiency SLAs.">
+          <span className="score-label">Req</span>
+          <span className="score-value" style={{ fontSize: 16, color: 'var(--request)' }}>{requests}</span>
+        </div>
+        <div className="score-block" title="Cost: infrastructure (per-turn) + processing (per-request) costs. Used in Value and Efficiency SLAs.">
           <span className="score-label">Cost</span>
-          <span className="score-value" style={{ color: 'var(--storage)' }}>-{score.cost}</span>
+          <span className="score-value" style={{ fontSize: 16, color: 'var(--warning)' }}>{cost}</span>
         </div>
       </div>
+
+      {/* Right: empty (Rules button is fixed-positioned by App.tsx) */}
+      <div style={{ width: 60 }} />
     </div>
   );
 }

@@ -1,124 +1,91 @@
 import { describe, it, expect } from 'vitest';
-import type { GameState, ActiveRequest } from '../types';
-import { createInitialGameState, finalizeBuild, makeBuildChoice, assignAppToCompute, resetInstanceCounter } from '../engine/build';
-import { resetRequestIdCounter } from '../engine/routing';
-import { computeScore } from '../engine/scoring';
+import { computeSLAs, getWinner } from '../engine/scoring';
+import { createGame } from '../engine/game';
+import type { Scoreboard, GameState } from '../engine/types';
 
-function buildGameState(): GameState {
-  resetInstanceCounter();
-  resetRequestIdCounter();
-  let state = createInitialGameState();
-  state = makeBuildChoice(state, 'lb', 'round-robin');
-  state = makeBuildChoice(state, 'compute', 'container');
-  state = makeBuildChoice(state, 'cache', false);
-  state = assignAppToCompute(state, {});
-  state = finalizeBuild(state);
-  return state;
-}
-
-function makeCompletedRequest(type: ActiveRequest['type'], turn: number, effect?: ActiveRequest['effectAttached']): ActiveRequest {
-  return {
-    id: `req-${Math.random()}`,
-    type,
-    location: 'completed',
-    turnPlayed: turn,
-    status: 'completed',
-    effectAttached: effect,
-  };
-}
-
-describe('combo scoring', () => {
-  it('no combo for 5 or fewer completions in a turn', () => {
-    let state = buildGameState();
-    // 5 hold-tickets in turn 1 (5 * 1 pt = 5 pts, no combo)
-    state = {
-      ...state,
-      completedRequests: Array.from({ length: 5 }, () => makeCompletedRequest('hold-ticket', 1)),
-    };
-
-    const score = computeScore(state);
-    expect(score.earned).toBe(5); // 5 * 1 = 5
+describe('computeSLAs', () => {
+  it('calculates value = (consistency * 20) - cost', () => {
+    const scoreboard: Scoreboard = { consistency: 14, availability: 18, cost: 113, requests: 18 };
+    const sla = computeSLAs(scoreboard);
+    expect(sla.value).toBe(14 * 20 - 113); // 167
   });
 
-  it('6th+ completion earns floor(base * 1.5) for hold-ticket', () => {
-    let state = buildGameState();
-    // 7 hold-tickets in turn 1
-    state = {
-      ...state,
-      completedRequests: Array.from({ length: 7 }, () => makeCompletedRequest('hold-ticket', 1)),
-    };
-
-    const score = computeScore(state);
-    // First 5: 5 * 1 = 5 pts
-    // 6th + 7th: floor(1 * 1.5) = 1 each = 2 pts
-    expect(score.earned).toBe(7); // Hold ticket combo: floor(1.5) = 1, so no visible difference
+  it('calculates uptime = availability / requests', () => {
+    const scoreboard: Scoreboard = { consistency: 10, availability: 9, cost: 50, requests: 10 };
+    const sla = computeSLAs(scoreboard);
+    expect(sla.uptime).toBe(0.9);
   });
 
-  it('6th+ purchase-ticket earns 7 pts instead of 5', () => {
-    let state = buildGameState();
-    // 7 purchase-tickets in turn 1
-    state = {
-      ...state,
-      completedRequests: Array.from({ length: 7 }, () => makeCompletedRequest('purchase-ticket', 1)),
-    };
-
-    const score = computeScore(state);
-    // First 5: 5 * 5 = 25 pts
-    // 6th + 7th: floor(5 * 1.5) = 7 each = 14 pts
-    expect(score.earned).toBe(39); // 25 + 14
+  it('calculates efficiency = cost / requests', () => {
+    const scoreboard: Scoreboard = { consistency: 10, availability: 10, cost: 80, requests: 10 };
+    const sla = computeSLAs(scoreboard);
+    expect(sla.efficiency).toBe(8);
   });
 
-  it('view-event stays 0 even with combo', () => {
-    let state = buildGameState();
-    // 8 view-events in turn 1
-    state = {
-      ...state,
-      completedRequests: Array.from({ length: 8 }, () => makeCompletedRequest('view-event', 1)),
-    };
-
-    const score = computeScore(state);
-    expect(score.earned).toBe(0); // 0 pts each, floor(0 * 1.5) = 0
+  it('server wins when all 3 SLAs pass', () => {
+    const scoreboard: Scoreboard = { consistency: 14, availability: 18, cost: 113, requests: 18 };
+    const sla = computeSLAs(scoreboard);
+    expect(sla.valuePass).toBe(true);   // 167 > 50
+    expect(sla.uptimePass).toBe(true);  // 1.0 > 0.95
+    expect(sla.efficiencyPass).toBe(true); // 6.28 < 8
+    expect(sla.serverWins).toBe(true);
   });
 
-  it('combo is per-turn (different turns dont stack)', () => {
-    let state = buildGameState();
-    state = {
-      ...state,
-      completedRequests: [
-        ...Array.from({ length: 4 }, () => makeCompletedRequest('purchase-ticket', 1)),
-        ...Array.from({ length: 4 }, () => makeCompletedRequest('purchase-ticket', 2)),
-      ],
-    };
-
-    const score = computeScore(state);
-    // Turn 1: 4 * 5 = 20 (no combo, under 5)
-    // Turn 2: 4 * 5 = 20 (no combo, under 5)
-    expect(score.earned).toBe(40);
+  it('client wins when value SLA fails', () => {
+    const scoreboard: Scoreboard = { consistency: 2, availability: 10, cost: 100, requests: 10 };
+    const sla = computeSLAs(scoreboard);
+    expect(sla.value).toBe(2 * 20 - 100); // -60
+    expect(sla.valuePass).toBe(false);
+    expect(sla.serverWins).toBe(false);
   });
 
-  it('payment-error zeroes points even with combo', () => {
-    let state = buildGameState();
-    state = {
-      ...state,
-      completedRequests: [
-        ...Array.from({ length: 5 }, () => makeCompletedRequest('purchase-ticket', 1)),
-        makeCompletedRequest('purchase-ticket', 1, 'payment-error'),
-      ],
-    };
+  it('client wins when uptime SLA fails', () => {
+    const scoreboard: Scoreboard = { consistency: 100, availability: 9, cost: 50, requests: 10 };
+    const sla = computeSLAs(scoreboard);
+    expect(sla.uptime).toBe(0.9);
+    expect(sla.uptimePass).toBe(false);
+    expect(sla.serverWins).toBe(false);
+  });
 
-    const score = computeScore(state);
-    // First 5: 5 * 5 = 25
-    // 6th: payment-error = 0
-    expect(score.earned).toBe(25);
+  it('client wins when efficiency SLA fails', () => {
+    const scoreboard: Scoreboard = { consistency: 100, availability: 10, cost: 100, requests: 10 };
+    const sla = computeSLAs(scoreboard);
+    expect(sla.efficiency).toBe(10);
+    expect(sla.efficiencyPass).toBe(false);
+    expect(sla.serverWins).toBe(false);
+  });
+
+  it('handles 0 requests without division by zero', () => {
+    const scoreboard: Scoreboard = { consistency: 0, availability: 0, cost: 50, requests: 0 };
+    const sla = computeSLAs(scoreboard);
+    expect(sla.uptime).toBe(1);
+    expect(sla.efficiency).toBe(0);
+    expect(sla.uptimePass).toBe(true);
+    expect(sla.efficiencyPass).toBe(true);
   });
 });
 
-describe('infrastructure costs', () => {
-  it('reflects new v3 costs', () => {
-    const state = buildGameState();
-    const score = computeScore(state);
-    // Container build: 1 LB (3) + 1 Container (4) + 1 RelDB (3) + 1 PaymentService (1) = 11
-    // Plus 3 app cards at 0 cost each
-    expect(score.cost).toBe(11);
+describe('getWinner', () => {
+  it('returns null if game is not over', () => {
+    const state = createGame();
+    expect(getWinner(state)).toBeNull();
+  });
+
+  it('returns server when all SLAs pass', () => {
+    const state: GameState = {
+      ...createGame(),
+      phase: 'game-over',
+      scoreboard: { consistency: 14, availability: 18, cost: 113, requests: 18 },
+    };
+    expect(getWinner(state)).toBe('server');
+  });
+
+  it('returns client when any SLA fails', () => {
+    const state: GameState = {
+      ...createGame(),
+      phase: 'game-over',
+      scoreboard: { consistency: 1, availability: 10, cost: 100, requests: 10 },
+    };
+    expect(getWinner(state)).toBe('client');
   });
 });

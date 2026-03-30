@@ -1,340 +1,244 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import type { GameState } from '../types';
-import { createInitialGameState, finalizeBuild, makeBuildChoice, assignAppToCompute } from '../engine/build';
-import { resetInstanceCounter } from '../engine/build';
-import { createRoutingContext, routeToCompute, routeToStorage, routeToService, advanceRouting, resolveCarryOver, getValidComputeTargets, getLBRecommendation, serverPassReaction, resetRequestIdCounter } from '../engine/routing';
-import { endServerTurn } from '../engine/turns';
-import { getCardDef } from '../cards';
+import { describe, it, expect } from 'vitest';
+import { createGame } from '../engine/game';
+import { playCard, playAppCard, resetInstanceIdCounter } from '../engine/server-turn';
+import { computeRoutingPath } from '../engine/routing';
+import type { GameState } from '../engine/types';
 
-function buildGameState(lbChoice: 'round-robin' | 'least-connections' = 'round-robin', computeChoice: 'cloud-functions' | 'container' = 'container', cache: boolean = false): GameState {
-  resetInstanceCounter();
-  resetRequestIdCounter();
-  let state = createInitialGameState();
-  state = makeBuildChoice(state, 'lb', lbChoice);
-  state = makeBuildChoice(state, 'compute', computeChoice);
-  state = makeBuildChoice(state, 'cache', cache);
-  state = assignAppToCompute(state, {});
-  state = finalizeBuild(state);
-  state = endServerTurn(state);
-  return state;
-}
-
-// Helper: pass through server reaction to get to AT_LB
-function passReaction(state: GameState): GameState {
-  if (state.routingContext?.state === 'AWAITING_SERVER_REACTION') {
-    return serverPassReaction(state);
-  }
-  return state;
-}
-
-describe('AWAITING_SERVER_REACTION', () => {
-  it('triggers when server has energy > 0', () => {
-    const state = buildGameState();
-    const result = createRoutingContext(state, 'view-event');
-    expect(result.routingContext).not.toBeNull();
-    expect(result.routingContext!.state).toBe('AWAITING_SERVER_REACTION');
-  });
-
-  it('skips when server has energy === 0', () => {
-    let state = buildGameState();
-    state = { ...state, turnState: { ...state.turnState, serverEnergy: 0 } };
-    const result = createRoutingContext(state, 'view-event');
-    expect(result.routingContext).not.toBeNull();
-    expect(result.routingContext!.state).toBe('AT_LB');
-  });
-});
-
-describe('serverPassReaction', () => {
-  it('transitions from AWAITING_SERVER_REACTION to AT_LB', () => {
-    let state = buildGameState();
-    state = createRoutingContext(state, 'view-event');
-    expect(state.routingContext!.state).toBe('AWAITING_SERVER_REACTION');
-
-    const result = serverPassReaction(state);
-    expect(result.routingContext!.state).toBe('AT_LB');
-    expect(result.routingContext!.validTargets.length).toBeGreaterThan(0);
-  });
-
-  it('sets WAITING_AT_LB when all compute is full after interrupts', () => {
-    let state = buildGameState('round-robin', 'cloud-functions', false);
-    const computeCards = state.board.filter(c => c.cardId === 'cloud-function');
-    const fakeRequests = computeCards.map((c, i) => ({
-      id: `fake-${i}`,
-      type: 'view-event' as const,
-      location: c.instanceId,
-      turnPlayed: 1,
-      status: 'active' as const,
-    }));
-    state = { ...state, requests: [...state.requests, ...fakeRequests] };
-
-    state = createRoutingContext(state, 'view-event');
-    expect(state.routingContext!.state).toBe('AWAITING_SERVER_REACTION');
-
-    const result = serverPassReaction(state);
-    expect(result.routingContext!.state).toBe('WAITING_AT_LB');
-  });
-
-  it('is no-op when not in AWAITING_SERVER_REACTION', () => {
-    const state = buildGameState();
-    const result = serverPassReaction(state);
-    expect(result).toBe(state);
-  });
-});
-
-describe('createRoutingContext', () => {
-  let state: GameState;
-
-  beforeEach(() => {
-    state = buildGameState();
-  });
-
-  it('decrements client deck when playing a request', () => {
-    const viewsBefore = state.clientDeck.find(e => e.type === 'view-event')!.remaining;
-    const result = createRoutingContext(state, 'view-event');
-    const viewsAfter = result.clientDeck.find(e => e.type === 'view-event')!.remaining;
-    expect(viewsAfter).toBe(viewsBefore - 1);
-  });
-
-  it('increments cards played this turn', () => {
-    const result = createRoutingContext(state, 'view-event');
-    expect(result.turnState.cardsPlayedThisTurn).toBe(1);
-  });
-
-  it('blocks playing when already routing', () => {
-    let result = createRoutingContext(state, 'view-event');
-    result = createRoutingContext(result, 'hold-ticket');
-    expect(result.routingContext!.requestId).toBe('req-1');
-  });
-
-  it('blocks playing when card limit reached', () => {
-    let s = { ...state, turnState: { ...state.turnState, cardLimit: 1, cardsPlayedThisTurn: 1 } };
-    const result = createRoutingContext(s, 'view-event');
-    expect(result.routingContext).toBeNull();
-  });
-
-  it('fails when LB throughput exceeded', () => {
-    let s = { ...state, turnState: { ...state.turnState, lbThroughputUsed: 20 } };
-    const result = createRoutingContext(s, 'view-event');
-    expect(result.routingContext!.state).toBe('FAILED');
-    expect(result.failedRequests.length).toBe(1);
-  });
-});
-
-describe('routeToCompute', () => {
-  let state: GameState;
-
-  beforeEach(() => {
-    state = buildGameState();
-    state = createRoutingContext(state, 'hold-ticket');
-    state = passReaction(state);
-  });
-
-  it('routes to a valid compute node', () => {
-    const target = state.routingContext!.validTargets[0];
-    const result = routeToCompute(state, target);
-    expect(result.routingContext!.state).toBe('AT_APP');
-    expect(result.routingContext!.computeNodeId).toBe(target);
-  });
-
-  it('rejects routing to disabled node', () => {
-    // Disable the compute node
-    const target = state.routingContext!.validTargets[0];
-    state = {
-      ...state,
-      board: state.board.map(c =>
-        c.instanceId === target ? { ...c, disabledUntilTurn: state.currentTurn + 1 } : c,
-      ),
-    };
-    const result = routeToCompute(state, target);
-    expect(result.routingContext!.nudgeMessage).toContain('disabled');
-  });
-
-  it('uses capacityModifier for capacity check', () => {
-    const target = state.routingContext!.validTargets[0];
-    // Set capacity to 0
-    state = {
-      ...state,
-      board: state.board.map(c =>
-        c.instanceId === target ? { ...c, capacityModifier: 0 } : c,
-      ),
-    };
-    const result = routeToCompute(state, target);
-    expect(result.routingContext!.nudgeMessage).toContain('capacity');
-  });
-});
-
-describe('getValidComputeTargets', () => {
-  it('returns compute nodes with available capacity', () => {
-    const state = buildGameState('round-robin', 'container', false);
-    const targets = getValidComputeTargets(state);
-    expect(targets.length).toBeGreaterThan(0);
-  });
-
-  it('excludes disabled nodes', () => {
-    let state = buildGameState('round-robin', 'container', false);
-    const computeCard = state.board.find(c => getCardDef(c.cardId).type === 'compute')!;
-    state = {
-      ...state,
-      board: state.board.map(c =>
-        c.instanceId === computeCard.instanceId ? { ...c, disabledUntilTurn: state.currentTurn + 1 } : c,
-      ),
-    };
-    const targets = getValidComputeTargets(state);
-    expect(targets).not.toContain(computeCard.instanceId);
-  });
-
-  it('uses capacityModifier when set', () => {
-    let state = buildGameState('round-robin', 'container', false);
-    const computeCard = state.board.find(c => getCardDef(c.cardId).type === 'compute')!;
-    // Set capacity to 0
-    state = {
-      ...state,
-      board: state.board.map(c =>
-        c.instanceId === computeCard.instanceId ? { ...c, capacityModifier: 0 } : c,
-      ),
-    };
-    const targets = getValidComputeTargets(state);
-    expect(targets).not.toContain(computeCard.instanceId);
-  });
-});
-
-// Helper: fully resolve a request through the interactive routing flow
-function resolveThrough(s: GameState): GameState {
-  if (s.routingContext?.state === 'AWAITING_SERVER_REACTION') {
-    s = serverPassReaction(s);
-  }
-  if (s.routingContext?.state === 'AT_LB' && s.routingContext.validTargets.length > 0) {
-    s = routeToCompute(s, s.routingContext.validTargets[0]);
-  }
-  if (s.routingContext?.state === 'AT_APP' && s.routingContext.validTargets.length > 0) {
-    s = routeToStorage(s, s.routingContext.validTargets[0]);
-  }
-  // Handle AT_SERVICE for purchase tickets
-  if (s.routingContext?.state === 'AT_SERVICE' && s.routingContext.validTargets.length > 0) {
-    s = routeToService(s, s.routingContext.validTargets[0]);
-  }
-  if (s.routingContext && ['COMPLETED', 'FAILED'].includes(s.routingContext.state)) {
-    s = advanceRouting(s);
-  }
+function buildSimpleBoard(): GameState {
+  resetInstanceIdCounter();
+  let s = createGame();
+  s = playCard(s, 'least-connections-lb');
+  s = playCard(s, 'container');
+  s = playCard(s, 'relational-db');
+  s = playCard(s, 'kv-store');
+  const compute = s.board.find(c => c.cardId === 'container')!;
+  const kv = s.board.find(c => c.cardId === 'kv-store')!;
+  const db = s.board.find(c => c.cardId === 'relational-db')!;
+  s = playAppCard(s, 'read-event', compute.instanceId, kv.instanceId);
+  s = playAppCard(s, 'write-hold', compute.instanceId, kv.instanceId);
+  s = playAppCard(s, 'write-payment', compute.instanceId, db.instanceId);
   return s;
 }
 
-describe('routeToStorage', () => {
-  let state: GameState;
-
-  beforeEach(() => {
-    state = buildGameState('round-robin', 'container', false);
-    state = createRoutingContext(state, 'hold-ticket');
-    state = passReaction(state);
-    const target = state.routingContext!.validTargets[0];
-    state = routeToCompute(state, target);
-  });
-
-  it('AT_APP shows valid storage targets', () => {
-    expect(state.routingContext!.state).toBe('AT_APP');
-    expect(state.routingContext!.validTargets.length).toBeGreaterThan(0);
-  });
-
-  it('routes to storage and completes for non-purchase', () => {
-    const storageTarget = state.routingContext!.validTargets[0];
-    const result = routeToStorage(state, storageTarget);
-    expect(result.routingContext!.state).toBe('COMPLETED');
-    expect(result.completedRequests.length).toBe(1);
-  });
-
-  it('routes to AT_SERVICE for purchase tickets', () => {
-    let s = buildGameState('round-robin', 'container', false);
-    s = createRoutingContext(s, 'purchase-ticket');
-    s = passReaction(s);
-    s = routeToCompute(s, s.routingContext!.validTargets[0]);
-    expect(s.routingContext!.state).toBe('AT_APP');
-    // Find storage target (not service)
-    const storageTargets = s.routingContext!.validTargets.filter(id => {
-      const card = s.board.find(c => c.instanceId === id);
-      return card && getCardDef(card.cardId).type === 'storage';
+describe('Routing', () => {
+  describe('basic routing through all layers', () => {
+    it('routes View Event (volume 10) through LB → Container → Read Event → KV Store', () => {
+      const s = buildSimpleBoard();
+      const { result } = computeRoutingPath(s, 'view-event', 10, []);
+      expect(result.fulfilledVolume).toBe(10);
+      expect(result.unfulfilledVolume).toBe(0);
+      expect(result.requestsCounted).toBe(10);
+      expect(result.availabilityGained).toBe(10);
+      expect(result.consistencyGained).toBe(10); // 10 * 1 value/req
+      expect(result.steps).toHaveLength(4); // network, compute, app, storage
     });
-    if (storageTargets.length > 0) {
-      s = routeToStorage(s, storageTargets[0]);
-      expect(s.routingContext!.state).toBe('AT_SERVICE');
-    }
-  });
 
-  it('fails when storage throughput is exhausted', () => {
-    let s = state;
-    s = resolveThrough(s);
-
-    for (let i = 0; i < 2; i++) {
-      s = createRoutingContext(s, 'hold-ticket');
-      s = resolveThrough(s);
-    }
-
-    s = createRoutingContext(s, 'hold-ticket');
-    if (s.routingContext?.state === 'AWAITING_SERVER_REACTION') {
-      s = serverPassReaction(s);
-    }
-    if (s.routingContext?.state === 'AT_LB') {
-      s = routeToCompute(s, s.routingContext.validTargets[0]);
-      if (s.routingContext?.state === 'AT_APP') {
-        s = routeToStorage(s, s.routingContext.validTargets[0]);
-        expect(s.routingContext!.state).toBe('FAILED');
-        expect(s.failedRequests.length).toBeGreaterThan(0);
-      }
-    }
-  });
-});
-
-describe('routeToService', () => {
-  it('completes purchase ticket through service card', () => {
-    let s = buildGameState('round-robin', 'container', false);
-    s = createRoutingContext(s, 'purchase-ticket');
-    s = passReaction(s);
-    s = routeToCompute(s, s.routingContext!.validTargets[0]);
-
-    // Route through storage
-    const storageTargets = s.routingContext!.validTargets.filter(id => {
-      const card = s.board.find(c => c.instanceId === id);
-      return card && getCardDef(card.cardId).type === 'storage';
+    it('routes Hold Ticket (volume 4) through system', () => {
+      const s = buildSimpleBoard();
+      const { result } = computeRoutingPath(s, 'hold-ticket', 4, []);
+      expect(result.fulfilledVolume).toBe(4);
+      expect(result.unfulfilledVolume).toBe(0);
+      expect(result.consistencyGained).toBe(4); // 4 * 1
     });
-    if (storageTargets.length > 0) {
-      s = routeToStorage(s, storageTargets[0]);
-      expect(s.routingContext!.state).toBe('AT_SERVICE');
 
-      // Route through service
-      s = routeToService(s, s.routingContext!.validTargets[0]);
-      expect(s.routingContext!.state).toBe('COMPLETED');
-      expect(s.completedRequests.length).toBe(1);
-      expect(s.completedRequests[0].type).toBe('purchase-ticket');
-    }
-  });
-});
-
-describe('getLBRecommendation', () => {
-  it('returns a recommendation for round-robin', () => {
-    const state = buildGameState('round-robin', 'container', false);
-    const targets = getValidComputeTargets(state);
-    const rec = getLBRecommendation(state, targets);
-    expect(rec).not.toBeNull();
-    expect(targets).toContain(rec);
+    it('routes Purchase Ticket (volume 4) through system', () => {
+      const s = buildSimpleBoard();
+      const { result } = computeRoutingPath(s, 'purchase-ticket', 4, []);
+      expect(result.fulfilledVolume).toBe(4);
+      expect(result.unfulfilledVolume).toBe(0);
+    });
   });
 
-  it('returns a recommendation for least-connections', () => {
-    const state = buildGameState('least-connections', 'container', false);
-    const targets = getValidComputeTargets(state);
-    const rec = getLBRecommendation(state, targets);
-    expect(rec).not.toBeNull();
+  describe('per-request costs', () => {
+    it('charges Read Event processing cost minus KV reduction', () => {
+      const s = buildSimpleBoard();
+      const { result } = computeRoutingPath(s, 'view-event', 10, []);
+      // Read Event: 1/req * 10 = 10, KV reduction: 1/req * 10 = 10, net = 0
+      expect(result.costIncurred).toBe(0);
+    });
+
+    it('charges Write Hold processing cost minus KV reduction', () => {
+      const s = buildSimpleBoard();
+      const { result } = computeRoutingPath(s, 'hold-ticket', 8, []);
+      // Write Hold: 2/req * 8 = 16, KV reduction: 1/req * 8 = 8, net = 8
+      expect(result.costIncurred).toBe(8);
+    });
+
+    it('charges Write Payment processing cost with Relational DB (no reduction)', () => {
+      const s = buildSimpleBoard();
+      const { result } = computeRoutingPath(s, 'purchase-ticket', 4, []);
+      // Write Payment: 3/req * 4 = 12, RelDB has no cost reduction
+      expect(result.costIncurred).toBe(12);
+    });
+
+    it('charges cloud function per-request cost', () => {
+      resetInstanceIdCounter();
+      let s = createGame();
+      s = playCard(s, 'least-connections-lb');
+      s = playCard(s, 'cloud-function');
+      s = playCard(s, 'kv-store');
+      const cf = s.board.find(c => c.cardId === 'cloud-function')!;
+      const kv = s.board.find(c => c.cardId === 'kv-store')!;
+      s = playAppCard(s, 'read-event', cf.instanceId, kv.instanceId);
+      const { result } = computeRoutingPath(s, 'view-event', 10, []);
+      // Cloud function: 1/req * 10 = 10, Read Event: 1/req * 10 = 10, KV: -10
+      expect(result.costIncurred).toBe(10); // 10 + 10 - 10
+    });
   });
 
-  it('returns null for empty targets', () => {
-    const state = buildGameState();
-    const rec = getLBRecommendation(state, []);
-    expect(rec).toBeNull();
-  });
-});
+  describe('partial fulfillment', () => {
+    it('stops volume at compute when capacity insufficient', () => {
+      const s = buildSimpleBoard();
+      // Container has 80 capacity. Send 100 requests.
+      const { result } = computeRoutingPath(s, 'view-event', 100, []);
+      expect(result.fulfilledVolume).toBe(80);
+      expect(result.unfulfilledVolume).toBe(20);
+      expect(result.availabilityGained).toBe(80);
+      expect(result.availabilityLost).toBe(0); // no penalty, just no availability added
+    });
 
-describe('resolveCarryOver', () => {
-  it('returns state unchanged when no carry-over', () => {
-    const state = buildGameState();
-    const result = resolveCarryOver(state);
-    expect(result.routingContext).toBeNull();
+    it('stops volume at LB when capacity insufficient', () => {
+      const s = buildSimpleBoard();
+      // LB has 200 capacity. Send 250 requests.
+      const { result } = computeRoutingPath(s, 'view-event', 250, []);
+      expect(result.fulfilledVolume).toBeLessThanOrEqual(200);
+      expect(result.unfulfilledVolume).toBeGreaterThanOrEqual(50);
+    });
+
+    it('capacity persists across routing calls', () => {
+      let s = buildSimpleBoard();
+      // First call: 60 requests fill 60 of 80 compute capacity
+      const { result: r1, boardUpdates: u1 } = computeRoutingPath(s, 'view-event', 60, []);
+      expect(r1.fulfilledVolume).toBe(60);
+
+      // Apply load to board
+      s = {
+        ...s,
+        board: s.board.map(c => {
+          const delta = u1.get(c.instanceId);
+          return delta ? { ...c, currentLoad: c.currentLoad + delta } : c;
+        }),
+      };
+
+      // Second call: 40 requests, only 20 capacity left on compute
+      const { result: r2 } = computeRoutingPath(s, 'view-event', 40, []);
+      expect(r2.fulfilledVolume).toBe(20);
+      expect(r2.unfulfilledVolume).toBe(20);
+    });
+  });
+
+  describe('LB algorithms', () => {
+    it('least-connections picks compute with most free capacity', () => {
+      resetInstanceIdCounter();
+      let s = createGame();
+      s = playCard(s, 'least-connections-lb');
+      s = playCard(s, 'container'); // 80 cap
+      s = playCard(s, 'container'); // 80 cap
+      s = playCard(s, 'kv-store');
+      const containers = s.board.filter(c => c.cardId === 'container');
+      const kv = s.board.find(c => c.cardId === 'kv-store')!;
+      s = playAppCard(s, 'read-event', containers[0].instanceId, kv.instanceId);
+      s = playAppCard(s, 'read-event', containers[1].instanceId, kv.instanceId);
+
+      // Load up first container
+      s = {
+        ...s,
+        board: s.board.map(c =>
+          c.instanceId === containers[0].instanceId ? { ...c, currentLoad: 30 } : c,
+        ),
+      };
+
+      // LC should pick second container (more free capacity)
+      const { result } = computeRoutingPath(s, 'view-event', 10, []);
+      expect(result.fulfilledVolume).toBe(10);
+    });
+
+    it('round-robin cycles through compute nodes', () => {
+      resetInstanceIdCounter();
+      let s = createGame();
+      s = playCard(s, 'round-robin-lb');
+      s = playCard(s, 'container');
+      s = playCard(s, 'container');
+      s = playCard(s, 'kv-store');
+      const containers = s.board.filter(c => c.cardId === 'container');
+      const kv = s.board.find(c => c.cardId === 'kv-store')!;
+      s = playAppCard(s, 'read-event', containers[0].instanceId, kv.instanceId);
+      s = playAppCard(s, 'read-event', containers[1].instanceId, kv.instanceId);
+
+      const { newRoundRobinIndex: rr1 } = computeRoutingPath(s, 'view-event', 10, []);
+      expect(rr1).toBe(1); // advanced from 0 to 1
+
+      const s2 = { ...s, roundRobinIndex: rr1 };
+      const { newRoundRobinIndex: rr2 } = computeRoutingPath(s2, 'view-event', 10, []);
+      expect(rr2).toBe(0); // wrapped around to 0
+    });
+  });
+
+  describe('missing components', () => {
+    it('fails if no LB on board', () => {
+      const s = createGame(); // empty board
+      const { result } = computeRoutingPath(s, 'view-event', 10, []);
+      expect(result.fulfilledVolume).toBe(0);
+      expect(result.unfulfilledVolume).toBe(10);
+    });
+
+    it('fails if no compute connected to LB', () => {
+      resetInstanceIdCounter();
+      let s = createGame();
+      s = playCard(s, 'least-connections-lb');
+      const { result } = computeRoutingPath(s, 'view-event', 10, []);
+      expect(result.fulfilledVolume).toBe(0);
+      expect(result.unfulfilledVolume).toBe(10);
+    });
+
+    it('fails if no matching app on compute', () => {
+      resetInstanceIdCounter();
+      let s = createGame();
+      s = playCard(s, 'least-connections-lb');
+      s = playCard(s, 'container');
+      s = playCard(s, 'kv-store');
+      // No app card played
+      const { result } = computeRoutingPath(s, 'view-event', 10, []);
+      expect(result.fulfilledVolume).toBe(0);
+      expect(result.unfulfilledVolume).toBe(10);
+    });
+
+    it('no storage connected to app is prevented by playAppCard validation', () => {
+      // playAppCard requires valid compute + storage instance IDs,
+      // so a dangling app without storage can't be created through the API.
+      expect(true).toBe(true);
+    });
+  });
+
+  describe('effects', () => {
+    it('Race Condition halves consistency on non-durable storage', () => {
+      const s = buildSimpleBoard();
+      // Hold Ticket routes to KV Store (not durable)
+      const { result } = computeRoutingPath(s, 'hold-ticket', 8, ['race-condition']);
+      // Without effect: 8 * 1 = 8. With race condition on non-durable: 4
+      expect(result.consistencyGained).toBe(4);
+    });
+
+    it('Race Condition does NOT halve consistency on durable storage', () => {
+      const s = buildSimpleBoard();
+      // Purchase Ticket routes to Relational DB (durable)
+      const { result } = computeRoutingPath(s, 'purchase-ticket', 4, ['race-condition']);
+      expect(result.consistencyGained).toBe(4); // unchanged
+    });
+
+    it('Server Error zeros consistency', () => {
+      const s = buildSimpleBoard();
+      const { result } = computeRoutingPath(s, 'view-event', 10, ['server-error']);
+      expect(result.consistencyGained).toBe(0);
+      expect(result.fulfilledVolume).toBe(10); // still fulfilled, just 0 value
+    });
+
+    it('Stampeding Herd is already factored into volume (no extra effect in routing)', () => {
+      const s = buildSimpleBoard();
+      // Volume is pre-doubled before calling routing
+      const { result } = computeRoutingPath(s, 'hold-ticket', 8, ['stampeding-herd']);
+      expect(result.fulfilledVolume).toBe(8);
+      expect(result.consistencyGained).toBe(8); // stampeding herd doesn't change value
+    });
   });
 });

@@ -1,61 +1,90 @@
-import type { GameState } from '../types';
+import { useState, useCallback } from 'react';
+import type { GameState } from '../engine/types';
 import type { GameAction } from '../reducer';
 import { PhaseBar } from './PhaseBar';
-import { ServerArchitecture } from './ServerArchitecture';
-import { ClientHand } from './ClientHand';
+import { ServerBoard } from './ServerBoard';
+import { ClientBoard } from './ClientBoard';
 import { TurnControls } from './TurnControls';
 import { ResolutionTracker } from './ResolutionTracker';
-import { ServerReactionPanel } from './ServerReactionPanel';
 
 interface GameBoardProps {
   state: GameState;
   dispatch: React.Dispatch<GameAction>;
+  onEndServerTurn: () => void;
+  onEndClientTurn: () => void;
 }
 
-export function GameBoard({ state, dispatch }: GameBoardProps) {
-  const isRouting = state.routingContext != null;
-  const ctx = state.routingContext;
+export function GameBoard({ state, dispatch, onEndServerTurn, onEndClientTurn }: GameBoardProps) {
+  const [flashCardId, setFlashCardId] = useState<string | null>(null);
+  const [routingPath, setRoutingPath] = useState<string[]>([]);
+  const [nextTargetCardId, setNextTargetCardId] = useState<string | null>(null);
+  // Store the step callback so ServerBoard can trigger it
+  const [onStepFn, setOnStepFn] = useState<(() => void) | null>(null);
 
-  // Click-to-dismiss terminal states
-  const handleBoardClick = () => {
-    if (!ctx) return;
-    const terminalStates = ['COMPLETED', 'FAILED', 'WAITING_AT_LB'];
-    if (terminalStates.includes(ctx.state)) {
-      dispatch({ type: 'ADVANCE_ROUTING' });
+  const handleFlashCard = useCallback((instanceId: string) => {
+    setFlashCardId(instanceId);
+    setTimeout(() => setFlashCardId(null), 600);
+  }, []);
+
+  const handleSetRoutingPath = useCallback((path: string[]) => {
+    setRoutingPath(path);
+  }, []);
+
+  const handleSetNextTarget = useCallback((cardId: string | null, stepFn: (() => void) | null) => {
+    setNextTargetCardId(cardId);
+    setOnStepFn(() => stepFn);
+  }, []);
+
+  const handleServerCardClick = useCallback((instanceId: string) => {
+    if (instanceId === nextTargetCardId && onStepFn) {
+      onStepFn();
     }
-    // No more auto-advancing — AT_APP (storage selection) and AT_LB (compute selection)
-    // are both interactive and handled by card click handlers
-  };
+  }, [nextTargetCardId, onStepFn]);
+
+  // Clear routing state when leaving resolution
+  if (state.phase !== 'resolution' && routingPath.length > 0) {
+    setRoutingPath([]);
+    setNextTargetCardId(null);
+    setOnStepFn(null);
+  }
 
   return (
-    <div className="game-board" onClick={handleBoardClick}>
+    <div className="game-board">
       <PhaseBar state={state} />
 
       <div className="play-area">
-        <ServerArchitecture state={state} dispatch={dispatch} />
+        <div className="server-side">
+          <ServerBoard
+            state={state}
+            dispatch={dispatch}
+            flashCardId={flashCardId}
+            routingPath={routingPath}
+            nextTargetCardId={nextTargetCardId}
+            onServerCardClick={handleServerCardClick}
+          />
+        </div>
         <div className="play-divider" />
-        {isRouting && ctx ? (
-          ctx.state === 'AWAITING_SERVER_REACTION' ? (
-            <ServerReactionPanel state={state} dispatch={dispatch} />
+        <div className="client-side">
+          {state.phase === 'resolution' ? (
+            <ResolutionTracker
+              state={state}
+              dispatch={dispatch}
+              onFlashCard={handleFlashCard}
+              onSetRoutingPath={handleSetRoutingPath}
+              onSetNextTarget={handleSetNextTarget}
+            />
           ) : (
-            <div className="client-side">
-              <div className="side-label">
-                resolving request
-                {state.batchContext && state.batchContext.batchSize > 1 && (
-                  <span style={{ marginLeft: 8, color: 'var(--info)' }}>
-                    ({state.batchContext.currentIndex}/{state.batchContext.batchSize})
-                  </span>
-                )}
-              </div>
-              <ResolutionTracker routingContext={ctx} />
-            </div>
-          )
-        ) : (
-          <ClientHand state={state} dispatch={dispatch} />
-        )}
+            <ClientBoard state={state} dispatch={dispatch} />
+          )}
+        </div>
       </div>
 
-      <TurnControls state={state} dispatch={dispatch} />
+      <TurnControls
+        state={state}
+        dispatch={dispatch}
+        onEndServerTurn={onEndServerTurn}
+        onEndClientTurn={onEndClientTurn}
+      />
     </div>
   );
 }

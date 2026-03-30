@@ -64,7 +64,8 @@
   overflow: hidden;
 }
 .play-divider {
-  background: var(--grid-line-major);
+  background: var(--text-muted);
+  opacity: 0.4;
 }
 
 /* Server architecture side */
@@ -74,6 +75,10 @@
   flex-direction: column;
   overflow-y: auto;
   gap: var(--sp-2xs);
+  scrollbar-width: none;
+}
+.server-side::-webkit-scrollbar {
+  display: none;
 }
 .side-label {
   font-family: 'JetBrains Mono', monospace;
@@ -92,11 +97,11 @@
 .arch-connector {
   display: flex;
   justify-content: center;
-  padding: var(--sp-xs) 0;
+  padding: var(--sp-md) 0;
 }
 .arch-connector-line {
   width: 1px;
-  height: 16px;
+  height: 32px;
   border-left: 1px dashed var(--text-muted);
 }
 .queue-bar {
@@ -126,6 +131,10 @@
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  scrollbar-width: none;
+}
+.client-side::-webkit-scrollbar {
+  display: none;
 }
 .client-hand {
   display: flex;
@@ -186,6 +195,14 @@
 .btn:disabled {
   opacity: 0.4;
   pointer-events: none;
+}
+
+/* Scrollbar-hidden utility */
+.scroll-hidden {
+  scrollbar-width: none;
+}
+.scroll-hidden::-webkit-scrollbar {
+  display: none;
 }
 
 /* Active player indicator */

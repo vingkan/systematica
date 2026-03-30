@@ -1,5 +1,5 @@
-import type { CardDefinition } from '../types';
-import { getCardDef } from '../cards';
+import type { CardDefinition } from '../engine/types';
+import { getCardDef } from '../engine/cards';
 
 interface CardProps {
   cardId: string;
@@ -14,10 +14,10 @@ interface CardProps {
   recommended?: boolean;
   stats?: string;
   badge?: string;
-  requestCount?: number;
+  currentLoad?: number;
 }
 
-export function Card({ cardId, size = 'full', onClick, selected, disabled, overloaded, highlighted, active, highlightLabel, recommended, stats, badge, requestCount }: CardProps) {
+export function Card({ cardId, size = 'full', onClick, selected, disabled, overloaded, highlighted, active, highlightLabel, recommended, stats, badge, currentLoad }: CardProps) {
   const def = getCardDef(cardId);
   const className = [
     'game-card',
@@ -31,7 +31,7 @@ export function Card({ cardId, size = 'full', onClick, selected, disabled, overl
     recommended && 'recommended',
   ].filter(Boolean).join(' ');
 
-  const displayStats = stats || getDefaultStats(def, requestCount);
+  const displayStats = stats || getDefaultStats(def, currentLoad);
 
   return (
     <div className={className} onClick={onClick} style={{ position: 'relative' }}>
@@ -71,22 +71,24 @@ export function Card({ cardId, size = 'full', onClick, selected, disabled, overl
   );
 }
 
-function getDefaultStats(def: CardDefinition, requestCount?: number): string {
+function getDefaultStats(def: CardDefinition, currentLoad?: number): string {
   const parts: string[] = [];
   if (def.capacity !== undefined) {
-    const count = requestCount ?? 0;
-    parts.push(`${count}/${def.capacity} req`);
+    const load = currentLoad ?? 0;
+    parts.push(`${load}/${def.capacity} req`);
   }
-  if (def.throughputPerTurn) parts.push(`${def.throughputPerTurn}/turn`);
-  if (def.readsPerTurn) parts.push(`${def.readsPerTurn}r/${def.writesPerTurn}w per turn`);
+  if (def.costPerTurn) parts.push(`cost: ${def.costPerTurn}/turn`);
+  if (def.costPerRequest) parts.push(`cost: ${def.costPerRequest}/req`);
   if (def.appSlots) parts.push(`${def.appSlots} app slot${def.appSlots > 1 ? 's' : ''}`);
-  if (def.cost > 0) parts.push(`cost: -${def.cost}`);
-  if (def.cost === 0 && def.type === 'application') parts.push('free');
+  if (def.durable === true) parts.push('durable');
+  if (def.durable === false) parts.push('not durable');
+  if (def.costReduction) parts.push(`-${def.costReduction} cost/req`);
+  if (def.storageOp) parts.push(`${def.storageOp} op`);
   return parts.join('\n');
 }
 
 interface RequestCardProps {
-  requestType: string;
+  cardId: string;
   remaining: number;
   onClick?: () => void;
   disabled?: boolean;
@@ -94,25 +96,27 @@ interface RequestCardProps {
   selected?: boolean;
 }
 
-export function RequestCard({ requestType, remaining, onClick, disabled, highlighted, selected }: RequestCardProps) {
-  const isEffect = ['stampeding-herd', 'race-condition', 'payment-error'].includes(requestType);
+const CLIENT_CARD_NAMES: Record<string, string> = {
+  'view-event': 'View Event',
+  'hold-ticket': 'Hold Ticket',
+  'purchase-ticket': 'Purchase Ticket',
+  'stampeding-herd': 'Stampeding Herd',
+  'race-condition': 'Race Condition',
+  'server-error': 'Server Error',
+};
+
+const CLIENT_CARD_DESCS: Record<string, string> = {
+  'view-event': 'vol: 10 | 1 pt/req\nneeds: Read Event',
+  'hold-ticket': 'vol: 4 | 1 pt/req\nneeds: Write Hold',
+  'purchase-ticket': 'vol: 4 | 1 pt/req\nneeds: Write Payment',
+  'stampeding-herd': 'Doubles volume\nAttach to any request',
+  'race-condition': 'Halves value if\nstorage not durable',
+  'server-error': 'Reduces value to 0\nAttach to any request',
+};
+
+export function RequestCard({ cardId, remaining, onClick, disabled, highlighted, selected }: RequestCardProps) {
+  const isEffect = ['stampeding-herd', 'race-condition', 'server-error'].includes(cardId);
   const cardClass = isEffect ? 'effect' : 'request';
-  const names: Record<string, string> = {
-    'view-event': 'View Event',
-    'hold-ticket': 'Hold Ticket',
-    'purchase-ticket': 'Purchase Ticket',
-    'stampeding-herd': 'Stampeding Herd',
-    'race-condition': 'Race Condition',
-    'payment-error': 'Payment Error',
-  };
-  const points: Record<string, string> = {
-    'view-event': '0 pts',
-    'hold-ticket': '+1 pt',
-    'purchase-ticket': '+5 pts',
-    'stampeding-herd': '+10 cards this turn\nMust play first',
-    'race-condition': 'Attach to 2 Hold Tickets\nbefore playing them',
-    'payment-error': 'Attach to 1 Purchase\nTicket: earns 0 pts',
-  };
 
   const classes = [
     'game-card', cardClass, 'card-full',
@@ -127,9 +131,9 @@ export function RequestCard({ requestType, remaining, onClick, disabled, highlig
       onClick={(disabled && !highlighted) ? undefined : onClick}
     >
       <span className="card-type-label">{isEffect ? 'effect' : 'request'}</span>
-      <span className="card-name">{names[requestType] || requestType}</span>
+      <span className="card-name">{CLIENT_CARD_NAMES[cardId] || cardId}</span>
       <span className="card-capacity">{remaining}x</span>
-      <span className="card-stats">{points[requestType] || ''}</span>
+      <span className="card-stats">{CLIENT_CARD_DESCS[cardId] || ''}</span>
     </div>
   );
 }
