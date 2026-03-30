@@ -11,7 +11,7 @@ export function playStampedingherd(state: GameState): GameState {
   if (turnState.cardsPlayedThisTurn > 0) return state; // Must be played first
 
   entry.remaining--;
-  turnState.cardLimit += 10;
+  turnState.stampedeActive = true;
   turnState.cardsPlayedThisTurn++;
   return { ...state, clientDeck: deck, turnState };
 }

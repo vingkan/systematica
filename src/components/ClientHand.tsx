@@ -55,7 +55,7 @@ export function ClientHand({ state, dispatch }: ClientHandProps) {
   const handlePlayEffect = (type: EffectType) => {
     if (type === 'stampeding-herd') {
       dispatch({ type: 'PLAY_STAMPEDING_HERD' });
-      addLog('Stampeding Herd! Card limit +10 this turn', 'warning');
+      addLog('Stampeding Herd! All request batch sizes doubled this turn', 'warning');
     } else {
       // Toggle selection for attachment-type effects
       dispatch({ type: 'SELECT_EFFECT', effectType: type });

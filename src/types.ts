@@ -74,6 +74,7 @@ export interface TurnState {
   lbThroughputUsed: number;
   roundRobinIndex: number;
   serverEnergy: number;
+  stampedeActive?: boolean;
 }
 
 export interface BuildChoices {
@@ -93,6 +94,18 @@ export interface EffectAttachment {
   requestType: RequestType;
 }
 
+export interface BatchContext {
+  cardType: RequestType;
+  batchSize: number;
+  currentIndex: number; // 1-indexed
+  autoRoutePath?: {
+    computeInstanceId: string;
+    storageInstanceId: string;
+    serviceInstanceId?: string;
+  };
+  effectForBatch?: EffectType; // carried from first request to subsequent
+}
+
 export interface GameState {
   phase: GamePhase;
   buildStep: BuildStep;
@@ -107,6 +120,7 @@ export interface GameState {
   clientDeck: ClientDeckEntry[];
   turnState: TurnState;
   routingContext: RoutingContext | null;
+  batchContext: BatchContext | null;
   effectAttachments: EffectAttachment[];
   selectedEffect: EffectType | null;
 }
@@ -128,6 +142,12 @@ export const TURN_CARD_LIMITS: Record<number, number> = {
   1: 4,
   2: 6,
   3: 10,
+};
+
+export const BATCH_SIZES: Record<RequestType, number> = {
+  'view-event': 3,
+  'hold-ticket': 2,
+  'purchase-ticket': 1,
 };
 
 export const REQUIRED_APP_FOR_REQUEST: Record<RequestType, string> = {

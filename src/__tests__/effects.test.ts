@@ -41,11 +41,12 @@ function playAndResolve(state: GameState, type: 'view-event' | 'hold-ticket' | '
 }
 
 describe('Stampeding Herd', () => {
-  it('increases card limit by 10 when played first', () => {
+  it('activates stampede mode when played first (doubles batch sizes)', () => {
     const state = buildGameState();
     const result = playStampedingherd(state);
-    expect(result.turnState.cardLimit).toBe(state.turnState.cardLimit + 10);
+    expect(result.turnState.stampedeActive).toBe(true);
     expect(result.turnState.cardsPlayedThisTurn).toBe(1);
+    expect(result.turnState.cardLimit).toBe(state.turnState.cardLimit); // Card limit unchanged
   });
 
   it('rejects if not played first', () => {

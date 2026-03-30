@@ -3,7 +3,7 @@ import type {
 } from '../types';
 import {
   LB_THROUGHPUT_PER_TURN, REQUIRED_APP_FOR_REQUEST, REQUEST_TIMEOUT_TURNS,
-  REQUEST_POINTS,
+  REQUEST_POINTS, BATCH_SIZES,
 } from '../types';
 import { getCardDef, REQUEST_STORAGE_OP } from '../cards';
 import { getNetworkCard, getComputeCards, getAppCardsOnCompute } from './build';
@@ -139,7 +139,18 @@ export function createRoutingContext(
   }
 
   const newTurnState = { ...turnState, lbThroughputUsed: turnState.lbThroughputUsed + 1 };
-  const newState = { ...state, clientDeck: deck, effectAttachments: newAttachments, selectedEffect: null, requests, turnState: newTurnState };
+
+  // Init batch context
+  const baseBatchSize = BATCH_SIZES[requestType] || 1;
+  const batchSize = newTurnState.stampedeActive ? baseBatchSize * 2 : baseBatchSize;
+  const batchContext = {
+    cardType: requestType,
+    batchSize,
+    currentIndex: 1,
+    effectForBatch: attachedEffect,
+  };
+
+  const newState = { ...state, clientDeck: deck, effectAttachments: newAttachments, selectedEffect: null, requests, turnState: newTurnState, batchContext };
 
   // If server has energy, give them a reaction window before routing
   if (newState.turnState.serverEnergy > 0) {
@@ -332,10 +343,16 @@ export function routeToCompute(
     ? `Select storage for ${op === 'read' ? 'read' : 'write'} operation`
     : null;
 
+  // Save compute choice to batch autoRoutePath
+  const updatedBatch = state.batchContext && state.batchContext.currentIndex === 1
+    ? { ...state.batchContext, autoRoutePath: { computeInstanceId, storageInstanceId: '', serviceInstanceId: undefined } }
+    : state.batchContext;
+
   return {
     ...state,
     requests: updatedRequests,
     turnState: { ...state.turnState, roundRobinIndex: newRRIndex },
+    batchContext: updatedBatch,
     routingContext: {
       ...ctx,
       state: 'AT_APP',
@@ -413,6 +430,11 @@ export function routeToStorage(
     cardInstanceId: storageInstanceId,
     result: 'success',
   };
+
+  // Save storage choice to batch autoRoutePath
+  if (state.batchContext?.autoRoutePath) {
+    state = { ...state, batchContext: { ...state.batchContext, autoRoutePath: { ...state.batchContext.autoRoutePath, storageInstanceId } } };
+  }
 
   // Purchase Ticket -> AT_SERVICE (route to payment service)
   if (request.type === 'purchase-ticket') {
@@ -519,6 +541,11 @@ export function routeToService(
 
   if (!ctx.validTargets.includes(serviceInstanceId)) return state;
 
+  // Save service choice to batch autoRoutePath
+  if (state.batchContext?.autoRoutePath) {
+    state = { ...state, batchContext: { ...state.batchContext, autoRoutePath: { ...state.batchContext.autoRoutePath, serviceInstanceId } } };
+  }
+
   // Complete the request through the service
   const completedRequest = { ...request, status: 'completed' as const };
   const basePoints = REQUEST_POINTS[request.type];
@@ -557,17 +584,231 @@ export function advanceRouting(state: GameState): GameState {
   const ctx = state.routingContext;
   if (!ctx) return state;
 
-  // Terminal states -> clear routing context
+  // Terminal states
   if (ctx.state === 'COMPLETED' || ctx.state === 'FAILED' || ctx.state === 'WAITING_AT_LB') {
-    return { ...state, routingContext: null };
+    // Check if batch has more requests
+    if (state.batchContext && state.batchContext.currentIndex < state.batchContext.batchSize) {
+      return advanceBatch({ ...state, routingContext: null });
+    }
+    // Batch complete (or no batch) — clear everything
+    return { ...state, routingContext: null, batchContext: null };
   }
 
   // Interactive states — wait for player input
-  // AWAITING_SERVER_REACTION: server plays interrupts or passes
-  // AT_LB: client picks compute
-  // AT_APP: client picks storage
-  // AT_SERVICE: client picks service card
   return state;
+}
+
+function advanceBatch(state: GameState): GameState {
+  const batch = state.batchContext;
+  if (!batch) return state;
+
+  const nextIndex = batch.currentIndex + 1;
+  const updatedBatch = { ...batch, currentIndex: nextIndex };
+
+  // Create next request in batch
+  const request: ActiveRequest = {
+    id: nextRequestId(),
+    type: batch.cardType,
+    location: 'lb-queue',
+    turnPlayed: state.currentTurn,
+    status: 'active',
+    effectAttached: batch.effectForBatch, // carry effect to all requests in batch
+  };
+
+  const requests = [...state.requests, request];
+  const turnState = { ...state.turnState, lbThroughputUsed: state.turnState.lbThroughputUsed + 1 };
+
+  // Check LB throughput
+  if (turnState.lbThroughputUsed > LB_THROUGHPUT_PER_TURN) {
+    const failedRequest = { ...request, status: 'failed' as const };
+    return {
+      ...state,
+      batchContext: updatedBatch,
+      requests: requests.filter(r => r.id !== request.id),
+      failedRequests: [...state.failedRequests, failedRequest],
+      turnState,
+      routingContext: {
+        requestId: request.id,
+        state: 'FAILED',
+        validTargets: [],
+        lbRecommendation: null,
+        steps: [{ state: 'FAILED', description: `FAILED: LB throughput exceeded (batch ${nextIndex}/${batch.batchSize}) | 0 pts`, result: 'failed' }],
+        nudgeMessage: null,
+      },
+    };
+  }
+
+  let newState = { ...state, batchContext: updatedBatch, requests, turnState };
+
+  // Try auto-routing if we have a saved path
+  if (batch.autoRoutePath && batch.autoRoutePath.computeInstanceId) {
+    const path = batch.autoRoutePath;
+
+    // Validate compute is still available
+    const validTargets = getValidComputeTargets(newState);
+    if (validTargets.includes(path.computeInstanceId)) {
+      // Auto-route through compute
+      newState = {
+        ...newState,
+        requests: newState.requests.map(r => r.id === request.id ? { ...r, location: path.computeInstanceId } : r),
+      };
+
+      // Check app match
+      const computeCard = newState.board.find(c => c.instanceId === path.computeInstanceId);
+      if (!computeCard) return fallbackToManual(newState, request, updatedBatch);
+      const appCards = getAppCardsOnCompute(newState.board, path.computeInstanceId);
+      const requiredApp = REQUIRED_APP_FOR_REQUEST[request.type];
+      const matchingApp = appCards.find(appInstId => {
+        const appCard = newState.board.find(c => c.instanceId === appInstId);
+        return appCard && appCard.cardId === requiredApp;
+      });
+      if (!matchingApp) return fallbackToManual(newState, request, updatedBatch);
+
+      // Check storage availability
+      if (path.storageInstanceId) {
+        const storageCard = newState.board.find(c => c.instanceId === path.storageInstanceId);
+        if (!storageCard) return fallbackToManual(newState, request, updatedBatch);
+
+        const storageDef = getCardDef(storageCard.cardId);
+        const op = REQUEST_STORAGE_OP[request.type];
+        const storageOps = { ...newState.turnState.storageOps };
+        if (!storageOps[path.storageInstanceId]) {
+          storageOps[path.storageInstanceId] = { reads: 0, writes: 0 };
+        }
+        const ops = { ...storageOps[path.storageInstanceId] };
+
+        if (op === 'read') {
+          if (storageDef.readsPerTurn && ops.reads >= storageDef.readsPerTurn) {
+            // Storage exhausted — fail this request
+            const failedReq = { ...request, status: 'failed' as const };
+            return {
+              ...newState,
+              requests: newState.requests.filter(r => r.id !== request.id),
+              failedRequests: [...newState.failedRequests, failedReq],
+              routingContext: {
+                requestId: request.id,
+                state: 'FAILED',
+                validTargets: [],
+                lbRecommendation: null,
+                steps: [{ state: 'FAILED', description: `FAILED: storage read limit (batch ${nextIndex}/${batch.batchSize}) | 0 pts`, result: 'failed' }],
+                nudgeMessage: null,
+              },
+            };
+          }
+          ops.reads++;
+        } else {
+          if (storageDef.writesPerTurn && ops.writes >= storageDef.writesPerTurn) {
+            const failedReq = { ...request, status: 'failed' as const };
+            return {
+              ...newState,
+              requests: newState.requests.filter(r => r.id !== request.id),
+              failedRequests: [...newState.failedRequests, failedReq],
+              routingContext: {
+                requestId: request.id,
+                state: 'FAILED',
+                validTargets: [],
+                lbRecommendation: null,
+                steps: [{ state: 'FAILED', description: `FAILED: storage write limit (batch ${nextIndex}/${batch.batchSize}) | 0 pts`, result: 'failed' }],
+                nudgeMessage: null,
+              },
+            };
+          }
+          ops.writes++;
+        }
+        storageOps[path.storageInstanceId] = ops;
+        newState = { ...newState, turnState: { ...newState.turnState, storageOps } };
+      }
+
+      // Handle service routing for purchase-ticket
+      if (request.type === 'purchase-ticket' && path.serviceInstanceId) {
+        const serviceCard = newState.board.find(c => c.instanceId === path.serviceInstanceId);
+        if (!serviceCard) return fallbackToManual(newState, request, updatedBatch);
+      }
+
+      // Race condition auto-fails
+      if (request.effectAttached === 'race-condition') {
+        const failedReq = { ...request, status: 'failed' as const };
+        return {
+          ...newState,
+          requests: newState.requests.filter(r => r.id !== request.id),
+          failedRequests: [...newState.failedRequests, failedReq],
+          routingContext: {
+            requestId: request.id,
+            state: 'FAILED',
+            validTargets: [],
+            lbRecommendation: null,
+            steps: [{ state: 'FAILED', description: `FAILED: Race Condition (batch ${nextIndex}/${batch.batchSize}) | 0 pts`, result: 'failed' }],
+            nudgeMessage: null,
+          },
+        };
+      }
+
+      // Auto-complete
+      const completedReq = { ...request, status: 'completed' as const };
+      const basePoints = REQUEST_POINTS[request.type];
+      const actualPoints = request.effectAttached === 'payment-error' ? 0 : basePoints;
+      const pointsDesc = actualPoints > 0 ? `+${actualPoints} pts` : '0 pts';
+
+      return {
+        ...newState,
+        requests: newState.requests.filter(r => r.id !== request.id),
+        completedRequests: [...newState.completedRequests, completedReq],
+        routingContext: {
+          requestId: request.id,
+          state: 'COMPLETED',
+          validTargets: [],
+          lbRecommendation: null,
+          steps: [{ state: 'COMPLETED', description: `COMPLETED (batch ${nextIndex}/${batch.batchSize}) | ${pointsDesc}`, result: 'success' }],
+          nudgeMessage: null,
+        },
+      };
+    }
+  }
+
+  // No auto-route path or compute invalid — fall back to manual
+  return fallbackToManual(newState, request, updatedBatch);
+}
+
+function fallbackToManual(
+  state: GameState,
+  request: ActiveRequest,
+  batch: GameState['batchContext'],
+): GameState {
+  // Clear autoRoutePath so future requests in batch also route manually
+  const updatedBatch = batch ? { ...batch, autoRoutePath: undefined } : null;
+  const effectLabel = request.effectAttached ? ` (${formatEffectName(request.effectAttached)} attached)` : '';
+
+  const validTargets = getValidComputeTargets(state);
+  const lbRecommendation = getLBRecommendation(state, validTargets);
+
+  if (validTargets.length === 0) {
+    return {
+      ...state,
+      batchContext: updatedBatch,
+      requests: state.requests.map(r => r.id === request.id ? { ...r, waitingSince: state.currentTurn } : r),
+      routingContext: {
+        requestId: request.id,
+        state: 'WAITING_AT_LB',
+        validTargets: [],
+        lbRecommendation: null,
+        steps: [{ state: 'WAITING_AT_LB', description: `Batch ${batch?.currentIndex}/${batch?.batchSize}: All compute full. Queued.`, result: 'pending' }],
+        nudgeMessage: 'All compute nodes are full.',
+      },
+    };
+  }
+
+  return {
+    ...state,
+    batchContext: updatedBatch,
+    routingContext: {
+      requestId: request.id,
+      state: 'AT_LB',
+      validTargets,
+      lbRecommendation,
+      steps: [{ state: 'AT_LB', description: `${formatRequestName(request.type)}${effectLabel} (batch ${batch?.currentIndex}/${batch?.batchSize})`, result: 'pending' }],
+      nudgeMessage: null,
+    },
+  };
 }
 
 function failRequest(

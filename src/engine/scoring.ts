@@ -3,13 +3,20 @@ import { REQUEST_POINTS } from '../types';
 import { getCardDef } from '../cards';
 
 export function computeScore(state: GameState): { earned: number; cost: number; total: number } {
-  let earned = 0;
+  // Group completions by turn for combo scoring
+  const byTurn: Record<number, ActiveRequest[]> = {};
   for (const req of state.completedRequests) {
-    if (req.effectAttached === 'payment-error') {
-      // Payment Error zeroes the points
-      continue;
-    }
-    earned += REQUEST_POINTS[req.type] || 0;
+    (byTurn[req.turnPlayed] ??= []).push(req);
+  }
+
+  let earned = 0;
+  for (const reqs of Object.values(byTurn)) {
+    reqs.forEach((req, idx) => {
+      if (req.effectAttached === 'payment-error') return;
+      const base = REQUEST_POINTS[req.type] || 0;
+      // Combo: 6th+ completion in a turn earns floor(base * 1.5)
+      earned += idx >= 5 ? Math.floor(base * 1.5) : base;
+    });
   }
 
   let cost = 0;

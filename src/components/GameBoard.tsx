@@ -39,7 +39,14 @@ export function GameBoard({ state, dispatch }: GameBoardProps) {
             <ServerReactionPanel state={state} dispatch={dispatch} />
           ) : (
             <div className="client-side">
-              <div className="side-label">resolving request</div>
+              <div className="side-label">
+                resolving request
+                {state.batchContext && state.batchContext.batchSize > 1 && (
+                  <span style={{ marginLeft: 8, color: 'var(--info)' }}>
+                    ({state.batchContext.currentIndex}/{state.batchContext.batchSize})
+                  </span>
+                )}
+              </div>
               <ResolutionTracker routingContext={ctx} />
             </div>
           )
